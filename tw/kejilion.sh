@@ -1,5 +1,5 @@
 #!/bin/bash
-sh_v="4.2.9"
+sh_v="4.2.10"
 
 
 gl_hui='\e[37m'
@@ -560,7 +560,7 @@ while true; do
 			echo ""
 			container_ids=$(docker ps -q)
 			echo "------------------------------------------------------------"
-			printf "%-25s %-25s %-25s\n" "容器名称" "网络名称" "IP地址"
+			printf "%-25s %-25s %-25s\n" "容器名稱" "網絡名稱" "IP地址"
 			for container_id in $container_ids; do
 				local container_info=$(docker inspect --format '{{ .Name }}{{ range $network, $config := .NetworkSettings.Networks }} {{ $network }} {{ $config.IPAddress }}{{ end }}' "$container_id")
 				local container_name=$(echo "$container_info" | awk '{print $1}')
@@ -1550,7 +1550,7 @@ certs_status() {
 		echo -e "5. 申請次數超限 ➠ Let's Encrypt有每週限額(5次/域名/週)"
 		echo -e "6. 國內備案限制 ➠ 中國大陸環境請確認域名是否備案"
 		echo "------------------------"
-		echo "1. 重新申請                  2. 不帶證書改用HTTP訪問                  0. 退出"
+		echo "1. 重新申請        2. 導入已有證書        3. 不帶證書改用HTTP訪問        0. 退出"
 		echo "------------------------"
 		read -e -p "請輸入你的選擇:" sub_choice
 		case $sub_choice in
@@ -1560,15 +1560,64 @@ certs_status() {
 		  	add_yuming
 		  	install_ssltls
 		  	certs_status
+
 	  		  ;;
 	  	  2)
+	  	  	send_stats "導入已有證書"
+
+			# 定義文件路徑
+			local cert_file="/home/web/certs/${yuming}_cert.pem"
+			local key_file="/home/web/certs/${yuming}_key.pem"
+
+			mkdir -p /home/web/certs
+
+			# 1. 輸入證書 (ECC 和 RSA 證書開頭都是 BEGIN CERTIFICATE)
+			echo "請粘貼 證書 (CRT/PEM) 內容 (按兩次回車結束)："
+			local cert_content=""
+			while IFS= read -r line; do
+				[[ -z "$line" && "$cert_content" == *"-----BEGIN"* ]] && break
+				cert_content+="${line}"$'\n'
+			done
+
+			# 2. 輸入私鑰 (兼容 RSA, ECC, PKCS#8)
+			echo "請粘貼 證書私鑰 (Private Key) 內容 (按兩次回車結束)："
+			local key_content=""
+			while IFS= read -r line; do
+				[[ -z "$line" && "$key_content" == *"-----BEGIN"* ]] && break
+				key_content+="${line}"$'\n'
+			done
+
+			# 3. 智能校驗
+			# 只要包含 "BEGIN CERTIFICATE" 和 "PRIVATE KEY" 即可通過
+			if [[ "$cert_content" == *"-----BEGIN CERTIFICATE-----"* && "$key_content" == *"PRIVATE KEY-----"* ]]; then
+				echo -n "$cert_content" > "$cert_file"
+				echo -n "$key_content" > "$key_file"
+
+				chmod 644 "$cert_file"
+				chmod 600 "$key_file"
+
+				# 識別當前證書類型並顯示
+				if [[ "$key_content" == *"EC PRIVATE KEY"* ]]; then
+					echo "檢測到 ECC 證書已成功保存。"
+				else
+					echo "檢測到 RSA 證書已成功保存。"
+				fi
+				auth_method="ssl_imported"
+			else
+				echo "錯誤：無效的證書或私鑰格式！"
+				certs_status
+			fi
+
+	  		  ;;
+	  	  3)
 	  	  	send_stats "不帶證書改用HTTP訪問"
 		  	sed -i '/if (\$scheme = http) {/,/}/s/^/#/' /home/web/conf.d/${yuming}.conf
 			sed -i '/ssl_certificate/d; /ssl_certificate_key/d' /home/web/conf.d/${yuming}.conf
 			sed -i '/443 ssl/d; /443 quic/d' /home/web/conf.d/${yuming}.conf
 	  		  ;;
 	  	  *)
-	  	  	exit
+	  	  	send_stats "退出申請"
+			exit
 	  		  ;;
 		esac
 	fi
@@ -1813,7 +1862,7 @@ check_waf_status() {
 	if grep -q "^\s*#\s*modsecurity on;" /home/web/nginx.conf; then
 		waf_status=""
 	elif grep -q "modsecurity on;" /home/web/nginx.conf; then
-		waf_status=" WAF已开启"
+		waf_status="WAF已開啟"
 	else
 		waf_status=""
 	fi
@@ -1822,7 +1871,7 @@ check_waf_status() {
 
 check_cf_mode() {
 	if [ -f "/etc/fail2ban/action.d/cloudflare-docker.conf" ]; then
-		CFmessage=" cf模式已开启"
+		CFmessage="cf模式已開啟"
 	else
 		CFmessage=""
 	fi
@@ -2269,9 +2318,9 @@ check_ldnmp_mode() {
 
 	# 檢查 MySQL 配置文件中是否包含 4096M
 	if docker exec "$MYSQL_CONTAINER" grep -q "4096M" "$MYSQL_CONF" 2>/dev/null; then
-		mode_info=" 高性能模式"
+		mode_info="高性能模式"
 	else
-		mode_info=" 标准模式"
+		mode_info="標準模式"
 	fi
 
 
@@ -2285,21 +2334,21 @@ check_nginx_compression() {
 
 	# 檢查 zstd 是否開啟且未被註釋（整行以 zstd on; 開頭）
 	if grep -qE '^\s*zstd\s+on;' "$CONFIG_FILE"; then
-		zstd_status=" zstd压缩已开启"
+		zstd_status="zstd壓縮已開啟"
 	else
 		zstd_status=""
 	fi
 
 	# 檢查 brotli 是否開啟且未被註釋
 	if grep -qE '^\s*brotli\s+on;' "$CONFIG_FILE"; then
-		br_status=" br压缩已开启"
+		br_status="br壓縮已開啟"
 	else
 		br_status=""
 	fi
 
 	# 檢查 gzip 是否開啟且未被註釋
 	if grep -qE '^\s*gzip\s+on;' "$CONFIG_FILE"; then
-		gzip_status=" gzip压缩已开启"
+		gzip_status="gzip壓縮已開啟"
 	else
 		gzip_status=""
 	fi
@@ -2452,9 +2501,9 @@ web_optimization() {
 
 check_docker_app() {
 	if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "$docker_name" ; then
-		check_docker="${gl_lv}已安装${gl_bai}"
+		check_docker="${gl_lv}已安裝${gl_bai}"
 	else
-		check_docker="${gl_hui}未安装${gl_bai}"
+		check_docker="${gl_hui}未安裝${gl_bai}"
 	fi
 }
 
@@ -2537,7 +2586,7 @@ check_docker_image_update() {
 
 		# 比較時間戳
 		if [[ $container_created_ts -lt $last_updated_ts ]]; then
-			update_status="${gl_huang}发现新版本!${gl_bai}"
+			update_status="${gl_huang}發現新版本!${gl_bai}"
 		else
 			update_status=""
 		fi
@@ -3112,9 +3161,9 @@ f2b_status_xxx() {
 
 check_f2b_status() {
 	if command -v fail2ban-client >/dev/null 2>&1; then
-		check_f2b_status="${gl_lv}已安装${gl_bai}"
+		check_f2b_status="${gl_lv}已安裝${gl_bai}"
 	else
-		check_f2b_status="${gl_hui}未安装${gl_bai}"
+		check_f2b_status="${gl_hui}未安裝${gl_bai}"
 	fi
 }
 
@@ -3391,7 +3440,7 @@ ldnmp_Proxy() {
 		upstream_servers="$upstream_servers    server $server;\n"
 	done
 
-	sed -i "s/# 动态添加/$upstream_servers/g" /home/web/conf.d/$yuming.conf
+	sed -i "s/# 動態添加/$upstream_servers/g" /home/web/conf.d/$yuming.conf
 	sed -i '/remote_addr/d' /home/web/conf.d/$yuming.conf
 
 	update_nginx_listen_port "$yuming" "$access_port"
@@ -3405,7 +3454,7 @@ ldnmp_Proxy() {
 
 ldnmp_Proxy_backend() {
 	clear
-	webname="反向代理-负载均衡"
+	webname="反向代理-負載均衡"
 
 	send_stats "安裝$webname"
 	echo "開始部署$webname"
@@ -3439,7 +3488,7 @@ ldnmp_Proxy_backend() {
 		upstream_servers="$upstream_servers    server $server;\n"
 	done
 
-	sed -i "s/# 动态添加/$upstream_servers/g" /home/web/conf.d/$yuming.conf
+	sed -i "s/# 動態添加/$upstream_servers/g" /home/web/conf.d/$yuming.conf
 
 	update_nginx_listen_port "$yuming" "$access_port"
 
@@ -3456,7 +3505,7 @@ ldnmp_Proxy_backend() {
 list_stream_services() {
 
 	STREAM_DIR="/home/web/stream.d"
-	printf "%-25s %-18s %-25s %-20s\n" "服务名" "通信类型" "本机地址" "后端地址"
+	printf "%-25s %-18s %-25s %-20s\n" "服務名" "通信類型" "本機地址" "後端地址"
 
 	if [ -z "$(ls -A "$STREAM_DIR")" ]; then
 		return
@@ -3579,7 +3628,7 @@ stream_panel() {
 
 ldnmp_Proxy_backend_stream() {
 	clear
-	webname="Stream四层代理-负载均衡"
+	webname="Stream四層代理-負載均衡"
 
 	send_stats "安裝$webname"
 	echo "開始部署$webname"
@@ -3623,7 +3672,7 @@ ldnmp_Proxy_backend_stream() {
 		upstream_servers="$upstream_servers    server $server;\n"
 	done
 
-	sed -i "s/# 动态添加/$upstream_servers/g" /home/web/stream.d/$proxy_name.conf
+	sed -i "s/# 動態添加/$upstream_servers/g" /home/web/stream.d/$proxy_name.conf
 
 	docker exec nginx nginx -s reload
 	clear
@@ -3849,7 +3898,7 @@ ldnmp_web_status() {
 
 check_panel_app() {
 if $lujing > /dev/null 2>&1; then
-	check_panel="${gl_lv}已安装${gl_bai}"
+	check_panel="${gl_lv}已安裝${gl_bai}"
 else
 	check_panel=""
 fi
@@ -3910,9 +3959,9 @@ done
 check_frp_app() {
 
 if [ -d "/home/frp/" ]; then
-	check_frp="${gl_lv}已安装${gl_bai}"
+	check_frp="${gl_lv}已安裝${gl_bai}"
 else
-	check_frp="${gl_hui}未安装${gl_bai}"
+	check_frp="${gl_hui}未安裝${gl_bai}"
 fi
 
 }
@@ -4050,7 +4099,7 @@ list_forwarding_services() {
 	local config_file="$1"
 
 	# 打印表頭
-	printf "%-20s %-25s %-30s %-10s\n" "服务名称" "内网地址" "外网地址" "协议"
+	printf "%-20s %-25s %-30s %-10s\n" "服務名稱" "內網地址" "外網地址" "協定"
 
 	awk '
 	BEGIN {
@@ -4383,9 +4432,9 @@ yt_menu_pro() {
 	while true; do
 
 		if [ -x "/usr/local/bin/yt-dlp" ]; then
-		   local YTDLP_STATUS="${gl_lv}已安装${gl_bai}"
+		   local YTDLP_STATUS="${gl_lv}已安裝${gl_bai}"
 		else
-		   local YTDLP_STATUS="${gl_hui}未安装${gl_bai}"
+		   local YTDLP_STATUS="${gl_hui}未安裝${gl_bai}"
 		fi
 
 		clear
@@ -5464,7 +5513,7 @@ clamav_scan() {
 		clamav/clamav-debian:latest \
 		clamscan -r --log=/var/log/clamav/scan.log $SCAN_PARAMS
 
-	echo -e "${gl_lv}$@ 掃描完成，病毒報告存放在${gl_huang}/home/docker/clamav/log/scan.log${gl_bai}"
+	echo -e "${gl_lv}$@ 扫描完成，病毒报告存放在${gl_huang}/home/docker/clamav/log/scan.log${gl_bai}"
 	echo -e "${gl_lv}如果有病毒請在${gl_huang}scan.log${gl_lv}文件中搜索FOUND關鍵字確認病毒位置${gl_bai}"
 
 }
@@ -5719,7 +5768,7 @@ Kernel_optimize() {
 		  1)
 			  cd ~
 			  clear
-			  local tiaoyou_moshi="高性能优化模式"
+			  local tiaoyou_moshi="高性能優化模式"
 			  optimize_high_performance
 			  send_stats "高性能模式優化"
 			  ;;
@@ -5738,14 +5787,14 @@ Kernel_optimize() {
 		  4)
 			  cd ~
 			  clear
-			  local tiaoyou_moshi="直播优化模式"
+			  local tiaoyou_moshi="直播優化模式"
 			  optimize_high_performance
 			  send_stats "直播推流優化"
 			  ;;
 		  5)
 			  cd ~
 			  clear
-			  local tiaoyou_moshi="游戏服优化模式"
+			  local tiaoyou_moshi="遊戲服優化模式"
 			  optimize_high_performance
 			  send_stats "遊戲服優化"
 			  ;;
@@ -5933,9 +5982,9 @@ linux_trash() {
 
 	local trash_status
 	if ! grep -q "trash-put" "$bashrc_profile"; then
-		trash_status="${gl_hui}未启用${gl_bai}"
+		trash_status="${gl_hui}未啟用${gl_bai}"
 	else
-		trash_status="${gl_lv}已启用${gl_bai}"
+		trash_status="${gl_lv}已啟用${gl_bai}"
 	fi
 
 	clear
@@ -6826,7 +6875,7 @@ linux_info() {
 
 	local swap_info=$(free -m | awk 'NR==3{used=$3; total=$2; if (total == 0) {percentage=0} else {percentage=used*100/total}; printf "%dM/%dM (%d%%)", used, total, percentage}')
 
-	local runtime=$(cat /proc/uptime | awk -F. '{run_days=int($1 / 86400);run_hours=int(($1 % 86400) / 3600);run_minutes=int(($1 % 3600) / 60); if (run_days > 0) printf("%d天 ", run_days); if (run_hours > 0) printf("%d时 ", run_hours); printf("%d分\n", run_minutes)}')
+	local runtime=$(cat /proc/uptime | awk -F. '{run_days=int($1 / 86400);run_hours=int(($1 % 86400) / 3600);run_minutes=int(($1% 3600) / 60); if (run_days > 0) printf("%d天 ", run_days); if (run_hours > 0) printf("%d時 ", run_hours); printf("%d分\n", run_minutes)}')
 
 	local timezone=$(current_timezone)
 
@@ -7599,7 +7648,7 @@ linux_docker() {
 
 				  echo "------------------------------------------------------------"
 				  container_ids=$(docker ps -q)
-				  printf "%-25s %-25s %-25s\n" "容器名称" "网络名称" "IP地址"
+				  printf "%-25s %-25s %-25s\n" "容器名稱" "網絡名稱" "IP地址"
 
 				  for container_id in $container_ids; do
 					  local container_info=$(docker inspect --format '{{ .Name }}{{ range $network, $config := .NetworkSettings.Networks }} {{ $network }} {{ $config.IPAddress }}{{ end }}' "$container_id")
@@ -8231,7 +8280,7 @@ linux_ldnmp() {
 	  3)
 	  clear
 	  # Discuz論壇
-	  webname="Discuz论坛"
+	  webname="Discuz論壇"
 	  send_stats "安裝$webname"
 	  echo "開始部署$webname"
 	  add_yuming
@@ -8311,7 +8360,7 @@ linux_ldnmp() {
 	  5)
 	  clear
 	  # 蘋果CMS
-	  webname="苹果CMS"
+	  webname="蘋果CMS"
 	  send_stats "安裝$webname"
 	  echo "開始部署$webname"
 	  add_yuming
@@ -8358,7 +8407,7 @@ linux_ldnmp() {
 	  6)
 	  clear
 	  # 獨腳數卡
-	  webname="独脚数卡"
+	  webname="獨腳數卡"
 	  send_stats "安裝$webname"
 	  echo "開始部署$webname"
 	  add_yuming
@@ -8410,7 +8459,7 @@ linux_ldnmp() {
 	  7)
 	  clear
 	  # flarum論壇
-	  webname="flarum论坛"
+	  webname="flarum論壇"
 	  send_stats "安裝$webname"
 	  echo "開始部署$webname"
 	  add_yuming
@@ -8549,7 +8598,7 @@ linux_ldnmp() {
 
 	  20)
 	  clear
-	  webname="PHP动态站点"
+	  webname="PHP動態站點"
 	  send_stats "安裝$webname"
 	  echo "開始部署$webname"
 	  add_yuming
@@ -8686,7 +8735,7 @@ linux_ldnmp() {
 
 	  22)
 	  clear
-	  webname="站点重定向"
+	  webname="站點重定向"
 	  send_stats "安裝$webname"
 	  echo "開始部署$webname"
 	  add_yuming
@@ -8785,7 +8834,7 @@ linux_ldnmp() {
 
 	  27)
 	  clear
-	  webname="AI绘画提示词生成器"
+	  webname="AI繪畫提示詞生成器"
 	  send_stats "安裝$webname"
 	  echo "開始部署$webname"
 	  add_yuming
@@ -8825,7 +8874,7 @@ linux_ldnmp() {
 
 	  30)
 	  clear
-	  webname="静态站点"
+	  webname="靜態站點"
 	  send_stats "安裝$webname"
 	  echo "開始部署$webname"
 	  add_yuming
@@ -9273,6 +9322,8 @@ while true; do
 	  echo -e "${gl_kjlan}107. ${color107}PanSou網盤搜索${gl_kjlan}108. ${color108}LangBot聊天機器人"
 	  echo -e "${gl_kjlan}109. ${color109}ZFile在線網盤${gl_kjlan}110. ${color110}Karakeep書籤管理"
 	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}111. ${color111}多格式文件轉換工具"
+	  echo -e "${gl_kjlan}------------------------"
 	  echo -e "${gl_kjlan}b.   ${gl_bai}備份全部應用數據${gl_kjlan}r.   ${gl_bai}還原全部應用數據"
 	  echo -e "${gl_kjlan}------------------------"
 	  echo -e "${gl_kjlan}0.   ${gl_bai}返回主菜單"
@@ -9284,7 +9335,7 @@ while true; do
 	  1|bt|baota)
 		local app_id="1"
 		local lujing="[ -d "/www/server/panel" ]"
-		local panelname="宝塔面板"
+		local panelname="寶塔面板"
 		local panelurl="https://www.bt.cn/new/index.html"
 
 		panel_app_install() {
@@ -9377,10 +9428,10 @@ while true; do
 
 		}
 
-		local docker_describe="一个Nginx反向代理工具面板，不支持添加域名访问。"
-		local docker_url="官网介绍: https://nginxproxymanager.com/"
-		local docker_use="echo \"初始用户名: admin@example.com\""
-		local docker_passwd="echo \"初始密码: changeme\""
+		local docker_describe="一個Nginx反向代理工具面板，不支持添加域名訪問。"
+		local docker_url="官網介紹: https://nginxproxymanager.com/"
+		local docker_use="echo \"初始用戶名: admin@example.com\""
+		local docker_passwd="echo \"初始密碼: changeme\""
 		local app_size="1"
 
 		docker_app
@@ -9412,8 +9463,8 @@ while true; do
 		}
 
 
-		local docker_describe="一个支持多种存储，支持网页浏览和 WebDAV 的文件列表程序，由 gin 和 Solidjs 驱动"
-		local docker_url="官网介绍: https://github.com/OpenListTeam/OpenList"
+		local docker_describe="一個支持多種存儲，支持網頁瀏覽和 WebDAV 的文件列表程序，由 gin 和 Solidjs 驅動"
+		local docker_url="官網介紹: https://github.com/OpenListTeam/OpenList"
 		local docker_use="docker exec openlist ./openlist admin random"
 		local docker_passwd=""
 		local app_size="1"
@@ -9453,8 +9504,8 @@ while true; do
 		}
 
 
-		local docker_describe="webtop基于Ubuntu的容器。若IP无法访问，请添加域名访问。"
-		local docker_url="官网介绍: https://docs.linuxserver.io/images/docker-webtop/"
+		local docker_describe="webtop基於Ubuntu的容器。若IP無法訪問，請添加域名訪問。"
+		local docker_url="官網介紹: https://docs.linuxserver.io/images/docker-webtop/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="2"
@@ -9533,8 +9584,8 @@ while true; do
 
 		}
 
-		local docker_describe="qbittorrent离线BT磁力下载服务"
-		local docker_url="官网介绍: https://hub.docker.com/r/linuxserver/qbittorrent"
+		local docker_describe="qbittorrent離線BT磁力下載服務"
+		local docker_url="官網介紹: https://hub.docker.com/r/linuxserver/qbittorrent"
 		local docker_use="sleep 3"
 		local docker_passwd="docker logs qbittorrent"
 		local app_size="1"
@@ -9673,9 +9724,9 @@ while true; do
 	  10|rocketchat)
 
 		local app_id="10"
-		local app_name="Rocket.Chat聊天系统"
-		local app_text="Rocket.Chat 是一个开源的团队通讯平台，支持实时聊天、音视频通话、文件共享等多种功能，"
-		local app_url="官方介绍: https://www.rocket.chat/"
+		local app_name="Rocket.Chat聊天系統"
+		local app_text="Rocket.Chat 是一個開源的團隊通訊平台，支持實時聊天、音視頻通話、文件共享等多種功能，"
+		local app_url="官方介紹: https://www.rocket.chat/"
 		local docker_name="rocketchat"
 		local docker_port="3897"
 		local app_size="2"
@@ -9741,10 +9792,10 @@ while true; do
 
 		}
 
-		local docker_describe="禅道是通用的项目管理软件"
-		local docker_url="官网介绍: https://www.zentao.net/"
-		local docker_use="echo \"初始用户名: admin\""
-		local docker_passwd="echo \"初始密码: 123456\""
+		local docker_describe="禪道是通用的項目管理軟件"
+		local docker_url="官網介紹: https://www.zentao.net/"
+		local docker_use="echo \"初始用戶名: admin\""
+		local docker_passwd="echo \"初始密碼: 123456\""
 		local app_size="2"
 		docker_app
 
@@ -9770,8 +9821,8 @@ while true; do
 
 		}
 
-		local docker_describe="青龙面板是一个定时任务管理平台"
-		local docker_url="官网介绍: ${gh_proxy}github.com/whyour/qinglong"
+		local docker_describe="青龍面板是一個定時任務管理平台"
+		local docker_url="官網介紹:${gh_proxy}github.com/whyour/qinglong"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -9781,9 +9832,9 @@ while true; do
 	  13|cloudreve)
 
 		local app_id="13"
-		local app_name="cloudreve网盘"
-		local app_text="cloudreve是一个支持多家云存储的网盘系统"
-		local app_url="视频介绍: https://www.bilibili.com/video/BV13F4m1c7h7?t=0.1"
+		local app_name="cloudreve網盤"
+		local app_text="cloudreve是一個支持多家云存儲的網盤系統"
+		local app_url="視頻介紹: https://www.bilibili.com/video/BV13F4m1c7h7?t=0.1"
 		local docker_name="cloudreve"
 		local docker_port="5212"
 		local app_size="2"
@@ -9835,8 +9886,8 @@ while true; do
 
 		}
 
-		local docker_describe="简单图床是一个简单的图床程序"
-		local docker_url="官网介绍: ${gh_proxy}github.com/icret/EasyImages2.0"
+		local docker_describe="簡單圖床是一個簡單的圖床程序"
+		local docker_url="官網介紹:${gh_proxy}github.com/icret/EasyImages2.0"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -9863,8 +9914,8 @@ while true; do
 		}
 
 
-		local docker_describe="emby是一个主从式架构的媒体服务器软件，可以用来整理服务器上的视频和音频，并将音频和视频流式传输到客户端设备"
-		local docker_url="官网介绍: https://emby.media/"
+		local docker_describe="emby是一個主從式架構的媒體服務器軟件，可以用來整理服務器上的視頻和音頻，並將音頻和視頻流式傳輸到客戶端設備"
+		local docker_url="官網介紹: https://emby.media/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -9884,8 +9935,8 @@ while true; do
 
 		}
 
-		local docker_describe="Speedtest测速面板是一个VPS网速测试工具，多项测试功能，还可以实时监控VPS进出站流量"
-		local docker_url="官网介绍: ${gh_proxy}github.com/wikihost-opensource/als"
+		local docker_describe="Speedtest測速面板是一個VPS網速測試工具，多項測試功能，還可以實時監控VPS進出站流量"
+		local docker_url="官網介紹:${gh_proxy}github.com/wikihost-opensource/als"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -9915,8 +9966,8 @@ while true; do
 		}
 
 
-		local docker_describe="AdGuardHome是一款全网广告拦截与反跟踪软件，未来将不止是一个DNS服务器。"
-		local docker_url="官网介绍: https://hub.docker.com/r/adguard/adguardhome"
+		local docker_describe="AdGuardHome是一款全網廣告攔截與反跟踪軟件，未來將不止是一個DNS服務器。"
+		local docker_url="官網介紹: https://hub.docker.com/r/adguard/adguardhome"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -9944,8 +9995,8 @@ while true; do
 
 		}
 
-		local docker_describe="onlyoffice是一款开源的在线office工具，太强大了！"
-		local docker_url="官网介绍: https://www.onlyoffice.com/"
+		local docker_describe="onlyoffice是一款開源的在線office工具，太強大了！"
+		local docker_url="官網介紹: https://www.onlyoffice.com/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="2"
@@ -10041,8 +10092,8 @@ while true; do
 		}
 
 
-		local docker_describe="portainer是一个轻量级的docker容器管理面板"
-		local docker_url="官网介绍: https://www.portainer.io/"
+		local docker_describe="portainer是一個輕量級的docker容器管理面板"
+		local docker_url="官網介紹: https://www.portainer.io/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10064,8 +10115,8 @@ while true; do
 		}
 
 
-		local docker_describe="VScode是一款强大的在线代码编写工具"
-		local docker_url="官网介绍: ${gh_proxy}github.com/coder/code-server"
+		local docker_describe="VScode是一款強大的在線代碼編寫工具"
+		local docker_url="官網介紹:${gh_proxy}github.com/coder/code-server"
 		local docker_use="sleep 3"
 		local docker_passwd="docker exec vscode-web cat /home/coder/.config/code-server/config.yaml"
 		local app_size="1"
@@ -10092,8 +10143,8 @@ while true; do
 		}
 
 
-		local docker_describe="Uptime Kuma 易于使用的自托管监控工具"
-		local docker_url="官网介绍: ${gh_proxy}github.com/louislam/uptime-kuma"
+		local docker_describe="Uptime Kuma 易於使用的自託管監控工具"
+		local docker_url="官網介紹:${gh_proxy}github.com/louislam/uptime-kuma"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10112,8 +10163,8 @@ while true; do
 
 		}
 
-		local docker_describe="Memos是一款轻量级、自托管的备忘录中心"
-		local docker_url="官网介绍: ${gh_proxy}github.com/usememos/memos"
+		local docker_describe="Memos是一款輕量級、自託管的備忘錄中心"
+		local docker_url="官網介紹:${gh_proxy}github.com/usememos/memos"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10153,8 +10204,8 @@ while true; do
 		}
 
 
-		local docker_describe="webtop基于Alpine的中文版容器。若IP无法访问，请添加域名访问。"
-		local docker_url="官网介绍: https://docs.linuxserver.io/images/docker-webtop/"
+		local docker_describe="webtop基於Alpine的中文版容器。若IP無法訪問，請添加域名訪問。"
+		local docker_url="官網介紹: https://docs.linuxserver.io/images/docker-webtop/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="2"
@@ -10174,9 +10225,9 @@ while true; do
 
 		}
 
-		local docker_describe="Nextcloud拥有超过 400,000 个部署，是您可以下载的最受欢迎的本地内容协作平台"
-		local docker_url="官网介绍: https://nextcloud.com/"
-		local docker_use="echo \"账号: nextcloud  密码: $rootpasswd\""
+		local docker_describe="Nextcloud擁有超過 400,000 個部署，是您可以下載的最受歡迎的本地內容協作平台"
+		local docker_url="官網介紹: https://nextcloud.com/"
+		local docker_use="echo \"賬號: nextcloud  密碼:$rootpasswd\""
 		local docker_passwd=""
 		local app_size="3"
 		docker_app
@@ -10194,8 +10245,8 @@ while true; do
 
 		}
 
-		local docker_describe="QD-Today是一个HTTP请求定时任务自动执行框架"
-		local docker_url="官网介绍: https://qd-today.github.io/qd/zh_CN/"
+		local docker_describe="QD-Today是一個HTTP請求定時任務自動執行框架"
+		local docker_url="官網介紹: https://qd-today.github.io/qd/zh_CN/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10214,8 +10265,8 @@ while true; do
 
 		}
 
-		local docker_describe="dockge是一个可视化的docker-compose容器管理面板"
-		local docker_url="官网介绍: ${gh_proxy}github.com/louislam/dockge"
+		local docker_describe="dockge是一個可視化的docker-compose容器管理面板"
+		local docker_url="官網介紹:${gh_proxy}github.com/louislam/dockge"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10234,8 +10285,8 @@ while true; do
 
 		}
 
-		local docker_describe="librespeed是用Javascript实现的轻量级速度测试工具，即开即用"
-		local docker_url="官网介绍: ${gh_proxy}github.com/librespeed/speedtest"
+		local docker_describe="librespeed是用Javascript實現的輕量級速度測試工具，即開即用"
+		local docker_url="官網介紹:${gh_proxy}github.com/librespeed/speedtest"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10259,8 +10310,8 @@ while true; do
 
 		}
 
-		local docker_describe="searxng是一个私有且隐私的搜索引擎站点"
-		local docker_url="官网介绍: https://hub.docker.com/r/alandoyle/searxng"
+		local docker_describe="searxng是一個私有且隱私的搜索引擎站點"
+		local docker_url="官網介紹: https://hub.docker.com/r/alandoyle/searxng"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10291,9 +10342,9 @@ while true; do
 		}
 
 
-		local docker_describe="photoprism非常强大的私有相册系统"
-		local docker_url="官网介绍: https://www.photoprism.app/"
-		local docker_use="echo \"账号: admin  密码: $rootpasswd\""
+		local docker_describe="photoprism非常強大的私有相冊系統"
+		local docker_url="官網介紹: https://www.photoprism.app/"
+		local docker_use="echo \"賬號: admin  密碼:$rootpasswd\""
 		local docker_passwd=""
 		local app_size="1"
 		docker_app
@@ -10319,8 +10370,8 @@ while true; do
 				 frooodle/s-pdf:latest
 		}
 
-		local docker_describe="这是一个强大的本地托管基于 Web 的 PDF 操作工具，使用 docker，允许您对 PDF 文件执行各种操作，例如拆分合并、转换、重新组织、添加图像、旋转、压缩等。"
-		local docker_url="官网介绍: ${gh_proxy}github.com/Stirling-Tools/Stirling-PDF"
+		local docker_describe="這是一個強大的本地託管基於 Web 的 PDF 操作工具，使用 docker，允許您對 PDF 文件執行各種操作，例如拆分合併、轉換、重新組織、添加圖像、旋轉、壓縮等。"
+		local docker_url="官網介紹:${gh_proxy}github.com/Stirling-Tools/Stirling-PDF"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10340,8 +10391,8 @@ while true; do
 		}
 
 
-		local docker_describe="这是一个强大图表绘制软件。思维导图，拓扑图，流程图，都能画"
-		local docker_url="官网介绍: https://www.drawio.com/"
+		local docker_describe="這是一個強大圖表繪製軟件。思維導圖，拓撲圖，流程圖，都能畫"
+		local docker_url="官網介紹: https://www.drawio.com/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10365,9 +10416,9 @@ while true; do
 
 		}
 
-		local docker_describe="Sun-Panel服务器、NAS导航面板、Homepage、浏览器首页"
-		local docker_url="官网介绍: https://doc.sun-panel.top/zh_cn/"
-		local docker_use="echo \"账号: admin@sun.cc  密码: 12345678\""
+		local docker_describe="Sun-Panel服務器、NAS導航面板、Homepage、瀏覽器首頁"
+		local docker_url="官網介紹: https://doc.sun-panel.top/zh_cn/"
+		local docker_use="echo \"賬號: admin@sun.cc  密碼: 12345678\""
 		local docker_passwd=""
 		local app_size="1"
 		docker_app
@@ -10389,8 +10440,8 @@ while true; do
 				stonith404/pingvin-share
 		}
 
-		local docker_describe="Pingvin Share 是一个可自建的文件分享平台，是 WeTransfer 的一个替代品"
-		local docker_url="官网介绍: ${gh_proxy}github.com/stonith404/pingvin-share"
+		local docker_describe="Pingvin Share 是一個可自建的文件分享平台，是 WeTransfer 的一個替代品"
+		local docker_url="官網介紹:${gh_proxy}github.com/stonith404/pingvin-share"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10416,9 +10467,9 @@ while true; do
 		}
 
 
-		local docker_describe="极简朋友圈，高仿微信朋友圈，记录你的美好生活"
+		local docker_describe="極簡朋友圈，高仿微信朋友圈，記錄你的美好生活"
 		local docker_url="官網介紹:${gh_proxy}github.com/kingwrcy/moments?tab=readme-ov-file"
-		local docker_use="echo \"账号: admin  密码: a123456\""
+		local docker_use="echo \"賬號: admin  密碼: a123456\""
 		local docker_passwd=""
 		local app_size="1"
 		docker_app
@@ -10441,7 +10492,7 @@ while true; do
 		}
 
 		local docker_describe="LobeChat聚合市面上主流的AI大模型，ChatGPT/Claude/Gemini/Groq/Ollama"
-		local docker_url="官网介绍: ${gh_proxy}github.com/lobehub/lobe-chat"
+		local docker_url="官網介紹:${gh_proxy}github.com/lobehub/lobe-chat"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="2"
@@ -10461,8 +10512,8 @@ while true; do
 		}
 
 
-		local docker_describe="是一个多功能IP工具箱，可以查看自己IP信息及连通性，用网页面板呈现"
-		local docker_url="官网介绍: ${gh_proxy}github.com/jason5ng32/MyIP/blob/main/README_ZH.md"
+		local docker_describe="是一個多功能IP工具箱，可以查看自己IP信息及連通性，用網頁面板呈現"
+		local docker_url="官網介紹:${gh_proxy}github.com/jason5ng32/MyIP/blob/main/README_ZH.md"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10495,8 +10546,8 @@ while true; do
 
 		}
 
-		local docker_describe="Bililive-go是一个支持多种直播平台的直播录制工具"
-		local docker_url="官网介绍: ${gh_proxy}github.com/hr3lxphr6j/bililive-go"
+		local docker_describe="Bililive-go是一個支持多種直播平台的直播錄製工具"
+		local docker_url="官網介紹:${gh_proxy}github.com/hr3lxphr6j/bililive-go"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10512,8 +10563,8 @@ while true; do
 			docker run -d -p ${docker_port}:5032 --restart=always --name webssh -e TZ=Asia/Shanghai jrohy/webssh
 		}
 
-		local docker_describe="简易在线ssh连接工具和sftp工具"
-		local docker_url="官网介绍: ${gh_proxy}github.com/Jrohy/webssh"
+		local docker_describe="簡易在線ssh連接工具和sftp工具"
+		local docker_url="官網介紹:${gh_proxy}github.com/Jrohy/webssh"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10524,8 +10575,8 @@ while true; do
 
 		local app_id="41"
 		local lujing="[ -d "/www/server/panel" ]"
-		local panelname="耗子面板"
-		local panelurl="官方地址: ${gh_proxy}github.com/TheTNB/panel"
+		local panelname="耗子麵板"
+		local panelurl="官方地址:${gh_proxy}github.com/TheTNB/panel"
 
 		panel_app_install() {
 			mkdir -p ~/haozi && cd ~/haozi && curl -fsLm 10 -o install.sh https://dl.cdn.haozi.net/panel/install.sh && bash install.sh
@@ -10565,8 +10616,8 @@ while true; do
 
 		}
 
-		local docker_describe="nexterm是一款强大的在线SSH/VNC/RDP连接工具。"
-		local docker_url="官网介绍: ${gh_proxy}github.com/gnmyt/Nexterm"
+		local docker_describe="nexterm是一款強大的在線SSH/VNC/RDP連接工具。"
+		local docker_url="官網介紹:${gh_proxy}github.com/gnmyt/Nexterm"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10586,10 +10637,10 @@ while true; do
 		}
 
 
-		local docker_describe="rustdesk开源的远程桌面(服务端)，类似自己的向日葵私服。"
-		local docker_url="官网介绍: https://rustdesk.com/zh-cn/"
+		local docker_describe="rustdesk開源的遠程桌面(服務端)，類似自己的向日葵私服。"
+		local docker_url="官網介紹: https://rustdesk.com/zh-cn/"
 		local docker_use="docker logs hbbs"
-		local docker_passwd="echo \"把你的IP和key记录下，会在远程桌面客户端中用到。去44选项装中继端吧！\""
+		local docker_passwd="echo \"把你的IP和key記錄下，會在遠程桌面客戶端中用到。去44選項裝中繼端吧！\""
 		local app_size="1"
 		docker_app
 		  ;;
@@ -10606,9 +10657,9 @@ while true; do
 
 		}
 
-		local docker_describe="rustdesk开源的远程桌面(中继端)，类似自己的向日葵私服。"
-		local docker_url="官网介绍: https://rustdesk.com/zh-cn/"
-		local docker_use="echo \"前往官网下载远程桌面的客户端: https://rustdesk.com/zh-cn/\""
+		local docker_describe="rustdesk開源的遠程桌面(中繼端)，類似自己的向日葵私服。"
+		local docker_url="官網介紹: https://rustdesk.com/zh-cn/"
+		local docker_use="echo \"前往官網下載遠程桌面的客戶端: https://rustdesk.com/zh-cn/\""
 		local docker_passwd=""
 		local app_size="1"
 		docker_app
@@ -10632,8 +10683,8 @@ while true; do
 
 		}
 
-		local docker_describe="Docker Registry 是一个用于存储和分发 Docker 镜像的服务。"
-		local docker_url="官网介绍: https://hub.docker.com/_/registry"
+		local docker_describe="Docker Registry 是一個用於存儲和分發 Docker 鏡像的服務。"
+		local docker_url="官網介紹: https://hub.docker.com/_/registry"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="2"
@@ -10652,8 +10703,8 @@ while true; do
 
 		}
 
-		local docker_describe="使用Go实现的GHProxy，用于加速部分地区Github仓库的拉取。"
-		local docker_url="官网介绍: https://github.com/WJQSERVER-STUDIO/ghproxy"
+		local docker_describe="使用Go實現的GHProxy，用於加速部分地區Github倉庫的拉取。"
+		local docker_url="官網介紹: https://github.com/WJQSERVER-STUDIO/ghproxy"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10663,9 +10714,9 @@ while true; do
 	  47|prometheus|grafana)
 
 		local app_id="47"
-		local app_name="普罗米修斯监控"
-		local app_text="Prometheus+Grafana企业级监控系统"
-		local app_url="官网介绍: https://prometheus.io"
+		local app_name="普羅米修斯監控"
+		local app_text="Prometheus+Grafana企業級監控系統"
+		local app_url="官網介紹: https://prometheus.io"
 		local docker_name="grafana"
 		local docker_port="8047"
 		local app_size="2"
@@ -10717,8 +10768,8 @@ while true; do
 
 		}
 
-		local docker_describe="这是一个普罗米修斯的主机数据采集组件，请部署在被监控主机上。"
-		local docker_url="官网介绍: https://github.com/prometheus/node_exporter"
+		local docker_describe="這是一個普羅米修斯的主機數據採集組件，請部署在被監控主機上。"
+		local docker_url="官網介紹: https://github.com/prometheus/node_exporter"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10747,8 +10798,8 @@ while true; do
 
 		}
 
-		local docker_describe="这是一个普罗米修斯的容器数据采集组件，请部署在被监控主机上。"
-		local docker_url="官网介绍: https://github.com/google/cadvisor"
+		local docker_describe="這是一個普羅米修斯的容器數據採集組件，請部署在被監控主機上。"
+		local docker_url="官網介紹: https://github.com/google/cadvisor"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10770,8 +10821,8 @@ while true; do
 
 		}
 
-		local docker_describe="这是一款网站变化检测、补货监控和通知的小工具"
-		local docker_url="官网介绍: https://github.com/dgtlmoon/changedetection.io"
+		local docker_describe="這是一款網站變化檢測、補貨監控和通知的小工具"
+		local docker_url="官網介紹: https://github.com/dgtlmoon/changedetection.io"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10803,8 +10854,8 @@ while true; do
 
 		}
 
-		local docker_describe="Docker可视化面板系统，提供完善的docker管理功能。"
-		local docker_url="官网介绍: https://github.com/donknap/dpanel"
+		local docker_describe="Docker可視化面板系統，提供完善的docker管理功能。"
+		local docker_url="官網介紹: https://github.com/donknap/dpanel"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10823,8 +10874,8 @@ while true; do
 
 		}
 
-		local docker_describe="OpenWebUI一款大语言模型网页框架，接入全新的llama3大语言模型"
-		local docker_url="官网介绍: https://github.com/open-webui/open-webui"
+		local docker_describe="OpenWebUI一款大語言模型網頁框架，接入全新的llama3大語言模型"
+		local docker_url="官網介紹: https://github.com/open-webui/open-webui"
 		local docker_use="docker exec ollama ollama run llama3.2:1b"
 		local docker_passwd=""
 		local app_size="5"
@@ -10875,8 +10926,8 @@ while true; do
 
 		}
 
-		local docker_describe="OpenWebUI一款大语言模型网页框架，接入全新的DeepSeek R1大语言模型"
-		local docker_url="官网介绍: https://github.com/open-webui/open-webui"
+		local docker_describe="OpenWebUI一款大語言模型網頁框架，接入全新的DeepSeek R1大語言模型"
+		local docker_url="官網介紹: https://github.com/open-webui/open-webui"
 		local docker_use="docker exec ollama ollama run deepseek-r1:1.5b"
 		local docker_passwd=""
 		local app_size="5"
@@ -10886,9 +10937,9 @@ while true; do
 
 	  58|dify)
 		local app_id="58"
-		local app_name="Dify知识库"
-		local app_text="是一款开源的大语言模型(LLM) 应用开发平台。自托管训练数据用于AI生成"
-		local app_url="官方网站: https://docs.dify.ai/zh-hans"
+		local app_name="Dify知識庫"
+		local app_text="是一款開源的大語言模型(LLM) 應用開發平台。自託管訓練數據用於AI生成"
+		local app_url="官方網站: https://docs.dify.ai/zh-hans"
 		local docker_name="docker-nginx-1"
 		local docker_port="8058"
 		local app_size="3"
@@ -10931,8 +10982,8 @@ while true; do
 	  59|new-api)
 		local app_id="59"
 		local app_name="NewAPI"
-		local app_text="新一代大模型网关与AI资产管理系统"
-		local app_url="官方网站: https://github.com/Calcium-Ion/new-api"
+		local app_text="新一代大模型網關與AI資產管理系統"
+		local app_url="官方網站: https://github.com/Calcium-Ion/new-api"
 		local docker_name="new-api"
 		local docker_port="8059"
 		local app_size="3"
@@ -10983,9 +11034,9 @@ while true; do
 	  60|jms)
 
 		local app_id="60"
-		local app_name="JumpServer开源堡垒机"
-		local app_text="是一个开源的特权访问管理 (PAM) 工具，该程序占用80端口不支持添加域名访问了"
-		local app_url="官方介绍: https://github.com/jumpserver/jumpserver"
+		local app_name="JumpServer開源堡壘機"
+		local app_text="是一個開源的特權訪問管理 (PAM) 工具，該程序佔用80端口不支持添加域名訪問了"
+		local app_url="官方介紹: https://github.com/jumpserver/jumpserver"
 		local docker_name="jms_web"
 		local docker_port="80"
 		local app_size="2"
@@ -11035,8 +11086,8 @@ while true; do
 
 		}
 
-		local docker_describe="免费开源机器翻译 API，完全自托管，它的翻译引擎由开源Argos Translate库提供支持。"
-		local docker_url="官网介绍: https://github.com/LibreTranslate/LibreTranslate"
+		local docker_describe="免費開源機器翻譯 API，完全自託管，它的翻譯引擎由開源Argos Translate庫提供支持。"
+		local docker_url="官網介紹: https://github.com/LibreTranslate/LibreTranslate"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="5"
@@ -11047,9 +11098,9 @@ while true; do
 
 	  62|ragflow)
 		local app_id="62"
-		local app_name="RAGFlow知识库"
-		local app_text="基于深度文档理解的开源 RAG（检索增强生成）引擎"
-		local app_url="官方网站: https://github.com/infiniflow/ragflow"
+		local app_name="RAGFlow知識庫"
+		local app_text="基於深度文檔理解的開源 RAG（檢索增強生成）引擎"
+		local app_url="官方網站: https://github.com/infiniflow/ragflow"
 		local docker_name="ragflow-server"
 		local docker_port="8062"
 		local app_size="8"
@@ -11096,8 +11147,8 @@ while true; do
 
 		}
 
-		local docker_describe="OpenWebUI一款大语言模型网页框架，官方精简版本，支持各大模型API接入"
-		local docker_url="官网介绍: https://github.com/open-webui/open-webui"
+		local docker_describe="OpenWebUI一款大語言模型網頁框架，官方精簡版本，支持各大模型API接入"
+		local docker_url="官網介紹: https://github.com/open-webui/open-webui"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="3"
@@ -11114,8 +11165,8 @@ while true; do
 			docker run -d --name it-tools --restart=always -p ${docker_port}:80 corentinth/it-tools:latest
 		}
 
-		local docker_describe="对开发人员和 IT 工作者来说非常有用的工具"
-		local docker_url="官网介绍: https://github.com/CorentinTh/it-tools"
+		local docker_describe="對開發人員和 IT 工作者來說非常有用的工具"
+		local docker_url="官網介紹: https://github.com/CorentinTh/it-tools"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11150,8 +11201,8 @@ while true; do
 
 		}
 
-		local docker_describe="是一款功能强大的自动化工作流平台"
-		local docker_url="官网介绍: https://github.com/n8n-io/n8n"
+		local docker_describe="是一款功能強大的自動化工作流平台"
+		local docker_url="官網介紹: https://github.com/n8n-io/n8n"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11179,8 +11230,8 @@ while true; do
 
 		}
 
-		local docker_describe="自动将你的公网 IP（IPv4/IPv6）实时更新到各大 DNS 服务商，实现动态域名解析。"
-		local docker_url="官网介绍: https://github.com/jeessy2/ddns-go"
+		local docker_describe="自動將你的公網 IP（IPv4/IPv6）實時更新到各大 DNS 服務商，實現動態域名解析。"
+		local docker_url="官網介紹: https://github.com/jeessy2/ddns-go"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11197,10 +11248,10 @@ while true; do
 			docker run -d --name allinssl -p ${docker_port}:8888 -v /home/docker/allinssl/data:/www/allinssl/data -e ALLINSSL_USER=allinssl -e ALLINSSL_PWD=allinssldocker -e ALLINSSL_URL=allinssl allinssl/allinssl:latest
 		}
 
-		local docker_describe="开源免费的 SSL 证书自动化管理平台"
-		local docker_url="官网介绍: https://allinssl.com"
+		local docker_describe="開源免費的 SSL 證書自動化管理平台"
+		local docker_url="官網介紹: https://allinssl.com"
 		local docker_use="echo \"安全入口: /allinssl\""
-		local docker_passwd="echo \"用户名: allinssl  密码: allinssldocker\""
+		local docker_passwd="echo \"用戶名: allinssl  密碼: allinssldocker\""
 		local app_size="1"
 		docker_app
 		  ;;
@@ -11229,8 +11280,8 @@ while true; do
 
 		}
 
-		local docker_describe="开源免费随时随地SFTP FTP WebDAV 文件传输工具"
-		local docker_url="官网介绍: https://sftpgo.com/"
+		local docker_describe="開源免費隨時隨地SFTP FTP WebDAV 文件傳輸工具"
+		local docker_url="官網介紹: https://sftpgo.com/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11261,9 +11312,9 @@ while true; do
 
 		}
 
-		local docker_describe="开源AI聊天机器人框架，支持微信，QQ，TG接入AI大模型"
-		local docker_url="官网介绍: https://astrbot.app/"
-		local docker_use="echo \"用户名: astrbot  密码: astrbot\""
+		local docker_describe="開源AI聊天機器人框架，支持微信，QQ，TG接入AI大模型"
+		local docker_url="官網介紹: https://astrbot.app/"
+		local docker_use="echo \"用戶名: astrbot  密碼: astrbot\""
 		local docker_passwd=""
 		local app_size="1"
 		docker_app
@@ -11290,8 +11341,8 @@ while true; do
 
 		}
 
-		local docker_describe="是一个轻量、高性能的音乐流媒体服务器"
-		local docker_url="官网介绍: https://www.navidrome.org/"
+		local docker_describe="是一個輕量、高性能的音樂流媒體服務器"
+		local docker_url="官網介紹: https://www.navidrome.org/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11317,8 +11368,8 @@ while true; do
 
 		}
 
-		local docker_describe="一个你可以控制数据的密码管理器"
-		local docker_url="官网介绍: https://bitwarden.com/"
+		local docker_describe="一個你可以控制數據的密碼管理器"
+		local docker_url="官網介紹: https://bitwarden.com/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11349,8 +11400,8 @@ while true; do
 
 		}
 
-		local docker_describe="免费在线视频搜索与观看平台"
-		local docker_url="官网介绍: https://github.com/LibreSpark/LibreTV"
+		local docker_describe="免費在線視頻搜索與觀看平台"
+		local docker_url="官網介紹: https://github.com/LibreSpark/LibreTV"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11364,9 +11415,9 @@ while true; do
 
 		local app_id="74"
 
-		local app_name="moontv私有影视"
-		local app_text="免费在线视频搜索与观看平台"
-		local app_url="视频介绍: https://github.com/MoonTechLab/LunaTV"
+		local app_name="moontv私有影視"
+		local app_text="免費在線視頻搜索與觀看平台"
+		local app_url="視頻介紹: https://github.com/MoonTechLab/LunaTV"
 		local docker_name="moontv-core"
 		local docker_port="8074"
 		local app_size="2"
@@ -11431,8 +11482,8 @@ while true; do
 
 		}
 
-		local docker_describe="你的音乐精灵，旨在帮助你更好地管理音乐。"
-		local docker_url="官网介绍: https://github.com/foamzou/melody"
+		local docker_describe="你的音樂精靈，旨在幫助你更好地管理音樂。"
+		local docker_url="官網介紹: https://github.com/foamzou/melody"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11458,8 +11509,8 @@ while true; do
 
 		}
 
-		local docker_describe="是一个中文DOS游戏合集网站"
-		local docker_url="官网介绍: https://github.com/rwv/chinese-dos-games"
+		local docker_describe="是一個中文DOS遊戲合集網站"
+		local docker_url="官網介紹: https://github.com/rwv/chinese-dos-games"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="2"
@@ -11493,9 +11544,9 @@ while true; do
 
 		}
 
-		local docker_describe="迅雷你的离线高速BT磁力下载工具"
-		local docker_url="官网介绍: https://github.com/cnk3x/xunlei"
-		local docker_use="echo \"手机登录迅雷，再输入邀请码，邀请码: 迅雷牛通\""
+		local docker_describe="迅雷你的離線高速BT磁力下載工具"
+		local docker_url="官網介紹: https://github.com/cnk3x/xunlei"
+		local docker_use="echo \"手機登錄迅雷，再輸入邀請碼，邀請碼: 迅雷牛通\""
 		local docker_passwd=""
 		local app_size="1"
 		docker_app
@@ -11508,8 +11559,8 @@ while true; do
 
 		local app_id="78"
 		local app_name="PandaWiki"
-		local app_text="PandaWiki是一款AI大模型驱动的开源智能文档管理系统，强烈建议不要自定义端口部署。"
-		local app_url="官方介绍: https://github.com/chaitin/PandaWiki"
+		local app_text="PandaWiki是一款AI大模型驅動的開源智能文檔管理系統，強烈建議不要自定義端口部署。"
+		local app_url="官方介紹: https://github.com/chaitin/PandaWiki"
 		local docker_name="panda-wiki-nginx"
 		local docker_port="2443"
 		local app_size="2"
@@ -11551,8 +11602,8 @@ while true; do
 
 		}
 
-		local docker_describe="Beszel轻量易用的服务器监控"
-		local docker_url="官网介绍: https://beszel.dev/zh/"
+		local docker_describe="Beszel輕量易用的服務器監控"
+		local docker_url="官網介紹: https://beszel.dev/zh/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11564,9 +11615,9 @@ while true; do
 	  80|linkwarden)
 
 		  local app_id="80"
-		  local app_name="linkwarden书签管理"
-		  local app_text="一个开源的自托管书签管理平台，支持标签、搜索和团队协作。"
-		  local app_url="官方网站: https://linkwarden.app/"
+		  local app_name="linkwarden書籤管理"
+		  local app_text="一個開源的自託管書籤管理平台，支持標籤、搜索和團隊協作。"
+		  local app_url="官方網站: https://linkwarden.app/"
 		  local docker_name="linkwarden-linkwarden-1"
 		  local docker_port="8080"
 		  local app_size="3"
@@ -11636,9 +11687,9 @@ while true; do
 
 	  81|jitsi)
 		  local app_id="81"
-		  local app_name="JitsiMeet视频会议"
-		  local app_text="一个开源的安全视频会议解决方案，支持多人在线会议、屏幕共享与加密通信。"
-		  local app_url="官方网站: https://jitsi.org/"
+		  local app_name="JitsiMeet視頻會議"
+		  local app_text="一個開源的安全視頻會議解決方案，支持多人在線會議、屏幕共享與加密通信。"
+		  local app_url="官方網站: https://jitsi.org/"
 		  local docker_name="jitsi"
 		  local docker_port="8081"
 		  local app_size="3"
@@ -11704,8 +11755,8 @@ while true; do
 
 		}
 
-		local docker_describe="高性能AI接口透明代理服务"
-		local docker_url="官网介绍: https://www.gpt-load.com/"
+		local docker_describe="高性能AI接口透明代理服務"
+		local docker_url="官網介紹: https://www.gpt-load.com/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11737,9 +11788,9 @@ while true; do
 
 		}
 
-		local docker_describe="轻量级的自托管服务器监控工具"
-		local docker_url="官网介绍: https://github.com/komari-monitor/komari/tree/main"
-		local docker_use="echo \"默认账号: admin  默认密码: 1212156\""
+		local docker_describe="輕量級的自託管服務器監控工具"
+		local docker_url="官網介紹: https://github.com/komari-monitor/komari/tree/main"
+		local docker_use="echo \"默認賬號: admin  默認密碼: 1212156\""
 		local docker_passwd=""
 		local app_size="1"
 		docker_app
@@ -11768,8 +11819,8 @@ while true; do
 
 		}
 
-		local docker_describe="开源个人订阅追踪器，可用于财务管理"
-		local docker_url="官网介绍: https://github.com/ellite/Wallos"
+		local docker_describe="開源個人訂閱追踪器，可用於財務管理"
+		local docker_url="官網介紹: https://github.com/ellite/Wallos"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11780,9 +11831,9 @@ while true; do
 	  85|immich)
 
 		  local app_id="85"
-		  local app_name="immich图片视频管理器"
-		  local app_text="高性能自托管照片和视频管理解决方案。"
-		  local app_url="官网介绍: https://github.com/immich-app/immich"
+		  local app_name="immich圖片視頻管理器"
+		  local app_text="高性能自託管照片和視頻管理解決方案。"
+		  local app_url="官網介紹: https://github.com/immich-app/immich"
 		  local docker_name="immich_server"
 		  local docker_port="8085"
 		  local app_size="3"
@@ -11846,8 +11897,8 @@ while true; do
 
 		}
 
-		local docker_describe="是一款开源媒体服务器软件"
-		local docker_url="官网介绍: https://jellyfin.org/"
+		local docker_describe="是一款開源媒體服務器軟件"
+		local docker_url="官網介紹: https://jellyfin.org/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11874,9 +11925,9 @@ while true; do
 
 		}
 
-		local docker_describe="远程一起观看电影和直播的程序。它提供了同步观影、直播、聊天等功能"
-		local docker_url="官网介绍: https://github.com/synctv-org/synctv"
-		local docker_use="echo \"初始账号和密码: root  登陆后请及时修改登录密码\""
+		local docker_describe="遠程一起觀看電影和直播的程序。它提供了同步觀影、直播、聊天等功能"
+		local docker_url="官網介紹: https://github.com/synctv-org/synctv"
+		local docker_use="echo \"初始賬號和密碼: root  登陸後請及時修改登錄密碼\""
 		local docker_passwd=""
 		local app_size="1"
 		docker_app
@@ -11904,10 +11955,10 @@ while true; do
 
 		}
 
-		local docker_describe="开源、免费的自建直播平台"
-		local docker_url="官网介绍: https://owncast.online"
-		local docker_use="echo \"访问地址后面带 /admin 访问管理员页面\""
-		local docker_passwd="echo \"初始账号: admin  初始密码: abc123  登陆后请及时修改登录密码\""
+		local docker_describe="開源、免費的自建直播平台"
+		local docker_url="官網介紹: https://owncast.online"
+		local docker_use="echo \"訪問地址後面帶 /admin 訪問管理員頁面\""
+		local docker_passwd="echo \"初始賬號: admin  初始密碼: abc123  登陸後請及時修改登錄密碼\""
 		local app_size="1"
 		docker_app
 
@@ -11933,10 +11984,10 @@ while true; do
 
 		}
 
-		local docker_describe="匿名口令分享文本和文件，像拿快递一样取文件"
-		local docker_url="官网介绍: https://github.com/vastsa/FileCodeBox"
-		local docker_use="echo \"访问地址后面带 /#/admin 访问管理员页面\""
-		local docker_passwd="echo \"管理员密码: FileCodeBox2023\""
+		local docker_describe="匿名口令分享文本和文件，像拿快遞一樣取文件"
+		local docker_url="官網介紹: https://github.com/vastsa/FileCodeBox"
+		local docker_use="echo \"訪問地址後面帶 /#/admin 訪問管理員頁面\""
+		local docker_passwd="echo \"管理員密碼: FileCodeBox2023\""
 		local app_size="1"
 		docker_app
 
@@ -11989,8 +12040,8 @@ while true; do
 
 		}
 
-		local docker_describe="Matrix是一个去中心化的聊天协议"
-		local docker_url="官网介绍: https://matrix.org/"
+		local docker_describe="Matrix是一個去中心化的聊天協議"
+		local docker_url="官網介紹: https://matrix.org/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12004,9 +12055,9 @@ while true; do
 
 		local app_id="91"
 
-		local app_name="gitea私有代码仓库"
-		local app_text="免费新一代的代码托管平台，提供接近 GitHub 的使用体验。"
-		local app_url="视频介绍: https://github.com/go-gitea/gitea"
+		local app_name="gitea私有代碼倉庫"
+		local app_text="免費新一代的代碼託管平台，提供接近 GitHub 的使用體驗。"
+		local app_url="視頻介紹: https://github.com/go-gitea/gitea"
 		local docker_name="gitea"
 		local docker_port="8091"
 		local app_size="2"
@@ -12068,8 +12119,8 @@ while true; do
 
 		}
 
-		local docker_describe="是一个基于Web的文件管理器"
-		local docker_url="官网介绍: https://filebrowser.org/"
+		local docker_describe="是一個基於Web的文件管理器"
+		local docker_url="官網介紹: https://filebrowser.org/"
 		local docker_use="docker logs filebrowser"
 		local docker_passwd=""
 		local app_size="1"
@@ -12095,8 +12146,8 @@ while true; do
 
 		}
 
-		local docker_describe="极简静态文件服务器，支持上传下载"
-		local docker_url="官网介绍: https://github.com/sigoden/dufs"
+		local docker_describe="極簡靜態文件服務器，支持上傳下載"
+		local docker_url="官網介紹: https://github.com/sigoden/dufs"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12126,8 +12177,8 @@ while true; do
 
 		}
 
-		local docker_describe="分布式高速下载工具，支持多种协议"
-		local docker_url="官网介绍: https://github.com/GopeedLab/gopeed"
+		local docker_describe="分佈式高速下載工具，支持多種協議"
+		local docker_url="官網介紹: https://github.com/GopeedLab/gopeed"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12141,9 +12192,9 @@ while true; do
 
 		local app_id="95"
 
-		local app_name="paperless文档管理平台"
-		local app_text="开源的电子文档管理系统，它的主要用途是把你的纸质文件数字化并管理起来。"
-		local app_url="视频介绍: https://docs.paperless-ngx.com/"
+		local app_name="paperless文檔管理平台"
+		local app_text="開源的電子文檔管理系統，它的主要用途是把你的紙質文件數字化並管理起來。"
+		local app_url="視頻介紹: https://docs.paperless-ngx.com/"
 		local docker_name="paperless-webserver-1"
 		local docker_port="8095"
 		local app_size="2"
@@ -12189,9 +12240,9 @@ while true; do
 
 		local app_id="96"
 
-		local app_name="2FAuth自托管二步验证器"
-		local app_text="自托管的双重身份验证 (2FA) 账户管理和验证码生成工具。"
-		local app_url="官网: https://github.com/Bubka/2FAuth"
+		local app_name="2FAuth自託管二步驗證器"
+		local app_text="自託管的雙重身份驗證 (2FA) 賬戶管理和驗證碼生成工具。"
+		local app_url="官網: https://github.com/Bubka/2FAuth"
 		local docker_name="2fauth"
 		local docker_port="8096"
 		local app_size="1"
@@ -12336,8 +12387,8 @@ while true; do
 
 		}
 
-		local docker_describe="现代化、高性能的虚拟专用网络工具"
-		local docker_url="官网介绍: https://www.wireguard.com/"
+		local docker_describe="現代化、高性能的虛擬專用網絡工具"
+		local docker_url="官網介紹: https://www.wireguard.com/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12406,8 +12457,8 @@ while true; do
 
 		}
 
-		local docker_describe="现代化、高性能的虚拟专用网络工具"
-		local docker_url="官网介绍: https://www.wireguard.com/"
+		local docker_describe="現代化、高性能的虛擬專用網絡工具"
+		local docker_url="官網介紹: https://www.wireguard.com/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12420,9 +12471,9 @@ while true; do
 
 		local app_id="99"
 
-		local app_name="dsm群晖虚拟机"
-		local app_text="Docker容器中的虚拟DSM"
-		local app_url="官网: https://github.com/vdsm/virtual-dsm"
+		local app_name="dsm群暉虛擬機"
+		local app_text="Docker容器中的虛擬DSM"
+		local app_url="官網: https://github.com/vdsm/virtual-dsm"
 		local docker_name="dsm"
 		local docker_port="8099"
 		local app_size="16"
@@ -12492,8 +12543,8 @@ while true; do
 			  syncthing/syncthing:latest
 		}
 
-		local docker_describe="开源的点对点文件同步工具，类似于 Dropbox、Resilio Sync，但完全去中心化。"
-		local docker_url="官网介绍: https://github.com/syncthing/syncthing"
+		local docker_describe="開源的點對點文件同步工具，類似於 Dropbox、Resilio Sync，但完全去中心化。"
+		local docker_url="官網介紹: https://github.com/syncthing/syncthing"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12504,9 +12555,9 @@ while true; do
 
 	  101|moneyprinterturbo)
 		local app_id="101"
-		local app_name="AI视频生成工具"
-		local app_text="MoneyPrinterTurbo是一款使用AI大模型合成高清短视频的工具"
-		local app_url="官方网站: https://github.com/harry0703/MoneyPrinterTurbo"
+		local app_name="AI視頻生成工具"
+		local app_text="MoneyPrinterTurbo是一款使用AI大模型合成高清短視頻的工具"
+		local app_url="官方網站: https://github.com/harry0703/MoneyPrinterTurbo"
 		local docker_name="moneyprinterturbo"
 		local docker_port="8101"
 		local app_size="3"
@@ -12559,8 +12610,8 @@ while true; do
 
 		}
 
-		local docker_describe="是一款支持独立部署的个人云社交媒体聊天服务"
-		local docker_url="官网介绍: https://github.com/Privoce/vocechat-web"
+		local docker_describe="是一款支持獨立部署的個人云社交媒體聊天服務"
+		local docker_url="官網介紹: https://github.com/Privoce/vocechat-web"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12571,9 +12622,9 @@ while true; do
 
 	  103|umami)
 		local app_id="103"
-		local app_name="Umami网站统计工具"
-		local app_text="开源、轻量、隐私友好的网站分析工具，类似于GoogleAnalytics。"
-		local app_url="官方网站: https://github.com/umami-software/umami"
+		local app_name="Umami網站統計工具"
+		local app_text="開源、輕量、隱私友好的網站分析工具，類似於GoogleAnalytics。"
+		local app_url="官方網站: https://github.com/umami-software/umami"
 		local docker_name="umami-umami-1"
 		local docker_port="8103"
 		local app_size="1"
@@ -12638,8 +12689,8 @@ while true; do
 
 		}
 
-		local docker_describe="思源笔记是一款隐私优先的知识管理系统"
-		local docker_url="官网介绍: https://github.com/siyuan-note/siyuan"
+		local docker_describe="思源筆記是一款隱私優先的知識管理系統"
+		local docker_url="官網介紹: https://github.com/siyuan-note/siyuan"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12665,8 +12716,8 @@ while true; do
 
 		}
 
-		local docker_describe="是一款强大的开源白板工具，集成思维导图、流程图等。"
-		local docker_url="官网介绍: https://github.com/plait-board/drawnix"
+		local docker_describe="是一款強大的開源白板工具，集成思維導圖、流程圖等。"
+		local docker_url="官網介紹: https://github.com/plait-board/drawnix"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12700,8 +12751,8 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 
 		}
 
-		local docker_describe="PanSou是一个高性能的网盘资源搜索API服务。"
-		local docker_url="官网介绍: https://github.com/fish2018/pansou"
+		local docker_describe="PanSou是一個高性能的網盤資源搜索API服務。"
+		local docker_url="官網介紹: https://github.com/fish2018/pansou"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12714,9 +12765,9 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 
 	  108|langbot)
 		local app_id="108"
-		local app_name="LangBot聊天机器人"
-		local app_text="是一个开源的大语言模型原生即时通信机器人开发平台"
-		local app_url="官方网站: https://github.com/langbot-app/LangBot"
+		local app_name="LangBot聊天機器人"
+		local app_text="是一個開源的大語言模型原生即時通信機器人開發平台"
+		local app_url="官方網站: https://github.com/langbot-app/LangBot"
 		local docker_name="langbot_plugin_runtime"
 		local docker_port="8108"
 		local app_size="1"
@@ -12772,8 +12823,8 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 
 		}
 
-		local docker_describe="是一个适用于个人或小团队的在线网盘程序。"
-		local docker_url="官网介绍: https://github.com/zfile-dev/zfile"
+		local docker_describe="是一個適用於個人或小團隊的在線網盤程序。"
+		local docker_url="官網介紹: https://github.com/zfile-dev/zfile"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12784,9 +12835,9 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 
 	  110|karakeep)
 		local app_id="110"
-		local app_name="karakeep书签管理"
-		local app_text="是一款可自行托管的书签应用，带有人工智能功能，专为数据囤积者而设计。"
-		local app_url="官方网站: https://github.com/karakeep-app/karakeep"
+		local app_name="karakeep書籤管理"
+		local app_text="是一款可自行託管的書籤應用，帶有人工智能功能，專為數據囤積者而設計。"
+		local app_url="官方網站: https://github.com/karakeep-app/karakeep"
 		local docker_name="docker-web-1"
 		local docker_port="8110"
 		local app_size="1"
@@ -12822,8 +12873,30 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 
 
 
+	  111|convertx)
 
+		local app_id="111"
+		local docker_name="convertx"
+		local docker_img="ghcr.io/c4illin/convertx:latest"
+		local docker_port=8111
 
+		docker_rum() {
+
+			docker run -d --name=${docker_name} --restart=always \
+				-p ${docker_port}:3000 \
+				-v /home/docker/convertx:/app/data \
+				${docker_img}
+
+		}
+
+		local docker_describe="是一個功能強大的多格式文件轉換工具（支持文檔、圖像、音頻視頻等）強烈建議添加域名訪問"
+		local docker_url="項目地址: https://github.com/c4illin/ConvertX"
+		local docker_use=""
+		local docker_passwd=""
+		local app_size="2"
+		docker_app
+
+		  ;;
 
 
 
@@ -13026,9 +13099,9 @@ linux_work() {
 			while true; do
 			  clear
 			  if grep -q 'tmux attach-session -t sshd || tmux new-session -s sshd' ~/.bashrc; then
-				  local tmux_sshd_status="${gl_lv}开启${gl_bai}"
+				  local tmux_sshd_status="${gl_lv}開啟${gl_bai}"
 			  else
-				  local tmux_sshd_status="${gl_hui}关闭${gl_bai}"
+				  local tmux_sshd_status="${gl_hui}關閉${gl_bai}"
 			  fi
 			  send_stats "SSH常駐模式"
 			  echo -e "SSH常駐模式${tmux_sshd_status}"
@@ -13049,7 +13122,7 @@ linux_work() {
 			  	  tmux_run
 				  ;;
 				2)
-				  sed -i '/# 自动进入 tmux 会话/,+4d' ~/.bashrc
+				  sed -i '/# 自動進入 tmux 會話/,+4d' ~/.bashrc
 				  tmux kill-window -t sshd
 				  ;;
 				*)
@@ -13123,6 +13196,7 @@ switch_mirror() {
 		  --upgrade-software "$upgrade_software" \
 		  --clean-cache "$clean_cache" \
 		  --ignore-backup-tips \
+		  --install-epel true \
 		  --pure-mode
 	else
 		echo "使用官方鏡像源..."
@@ -13134,6 +13208,7 @@ switch_mirror() {
 		  --upgrade-software "$upgrade_software" \
 		  --clean-cache "$clean_cache" \
 		  --ignore-backup-tips \
+		  --install-epel true \
 		  --pure-mode
 	fi
 }
@@ -13538,7 +13613,7 @@ EOF
 				send_stats "用戶管理"
 				echo "用戶列表"
 				echo "----------------------------------------------------------------------------"
-				printf "%-24s %-34s %-20s %-10s\n" "用户名" "用户权限" "用户组" "sudo权限"
+				printf "%-24s %-34s %-20s %-10s\n" "使用者名稱" "用戶權限" "用戶組" "sudo權限"
 				while IFS=: read -r username _ userid groupid _ _ homedir shell; do
 					local groups=$(groups "$username" | cut -d : -f 2)
 					local sudo_status=$(sudo -n -lU "$username" 2>/dev/null | grep -q '(ALL : ALL)' && echo "Yes" || echo "No")
@@ -14291,11 +14366,11 @@ EOF
 			while true; do
 			  clear
 			  if grep -q '^ENABLE_STATS="true"' /usr/local/bin/k > /dev/null 2>&1; then
-			  	local status_message="${gl_lv}正在采集数据${gl_bai}"
+			  	local status_message="${gl_lv}正在採集數據${gl_bai}"
 			  elif grep -q '^ENABLE_STATS="false"' /usr/local/bin/k > /dev/null 2>&1; then
-			  	local status_message="${gl_hui}采集已关闭${gl_bai}"
+			  	local status_message="${gl_hui}採集已關閉${gl_bai}"
 			  else
-			  	local status_message="无法确定的状态"
+			  	local status_message="無法確定的狀態"
 			  fi
 
 			  echo "隱私與安全"
