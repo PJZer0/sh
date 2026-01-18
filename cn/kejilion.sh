@@ -1,5 +1,5 @@
 #!/bin/bash
-sh_v="4.2.9"
+sh_v="4.3.3"
 
 
 gl_hui='\e[37m'
@@ -546,7 +546,7 @@ while true; do
 		11)
 			send_stats "进入容器"
 			read -e -p "请输入容器名: " dockername
-			docker exec $dockername /bin/sh
+			docker exec -it $dockername /bin/sh
 			break_end
 			;;
 		12)
@@ -1303,7 +1303,7 @@ ldnmp_v() {
 install_ldnmp_conf() {
 
   # 创建必要的目录和文件
-  cd /home && mkdir -p web/html web/mysql web/certs web/conf.d web/stream.d web/redis web/log/nginx && touch web/docker-compose.yml
+  cd /home && mkdir -p web/html web/mysql web/certs web/conf.d web/stream.d web/redis web/log/nginx web/letsencrypt && touch web/docker-compose.yml
   wget -O /home/web/nginx.conf ${gh_proxy}raw.githubusercontent.com/kejilion/nginx/main/nginx10.conf
   wget -O /home/web/conf.d/default.conf ${gh_proxy}raw.githubusercontent.com/kejilion/nginx/main/default10.conf
 
@@ -1325,7 +1325,7 @@ update_docker_compose_with_db_creds() {
 
   cp /home/web/docker-compose.yml /home/web/docker-compose1.yml
 
-  if ! grep -q "stream" /home/web/docker-compose.yml; then
+  if ! grep -q "letsencrypt" /home/web/docker-compose.yml; then
 	wget -O /home/web/docker-compose.yml ${gh_proxy}raw.githubusercontent.com/kejilion/docker/main/LNMP-docker-compose-10.yml
 
   	dbrootpasswd=$(grep -oP 'MYSQL_ROOT_PASSWORD:\s*\K.*' /home/web/docker-compose1.yml | tr -d '[:space:]')
@@ -1425,15 +1425,7 @@ install_certbot() {
 }
 
 
-
-
-
-
-
-
-
 install_ssltls() {
-	  check_port > /dev/null 2>&1
 	  docker stop nginx > /dev/null 2>&1
 	  cd ~
 
@@ -1453,6 +1445,7 @@ install_ssltls() {
 				if ! iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null; then
 					iptables -I INPUT 1 -p tcp --dport 80 -j ACCEPT
 				fi
+
 				docker run --rm -p 80:80 -v /etc/letsencrypt/:/etc/letsencrypt certbot/certbot certonly --standalone -d "$yuming" --email your@email.com --agree-tos --no-eff-email --force-renewal --key-type ecdsa
 			fi
 	  fi
@@ -1550,7 +1543,7 @@ certs_status() {
 		echo -e "5. 申请次数超限 ➠ Let's Encrypt有每周限额(5次/域名/周)"
 		echo -e "6. 国内备案限制 ➠ 中国大陆环境请确认域名是否备案"
 		echo "------------------------"
-		echo "1. 重新申请                  2. 不带证书改用HTTP访问                  0. 退出"
+		echo "1. 重新申请        2. 导入已有证书        3. 不带证书改用HTTP访问        0. 退出"
 		echo "------------------------"
 		read -e -p "请输入你的选择: " sub_choice
 		case $sub_choice in
@@ -1560,8 +1553,56 @@ certs_status() {
 		  	add_yuming
 		  	install_ssltls
 		  	certs_status
+
 	  		  ;;
 	  	  2)
+	  	  	send_stats "导入已有证书"
+
+			# 定义文件路径
+			local cert_file="/home/web/certs/${yuming}_cert.pem"
+			local key_file="/home/web/certs/${yuming}_key.pem"
+
+			mkdir -p /home/web/certs
+
+			# 1. 输入证书 (ECC 和 RSA 证书开头都是 BEGIN CERTIFICATE)
+			echo "请粘贴 证书 (CRT/PEM) 内容 (按两次回车结束)："
+			local cert_content=""
+			while IFS= read -r line; do
+				[[ -z "$line" && "$cert_content" == *"-----BEGIN"* ]] && break
+				cert_content+="${line}"$'\n'
+			done
+
+			# 2. 输入私钥 (兼容 RSA, ECC, PKCS#8)
+			echo "请粘贴 证书私钥 (Private Key) 内容 (按两次回车结束)："
+			local key_content=""
+			while IFS= read -r line; do
+				[[ -z "$line" && "$key_content" == *"-----BEGIN"* ]] && break
+				key_content+="${line}"$'\n'
+			done
+
+			# 3. 智能校验
+			# 只要包含 "BEGIN CERTIFICATE" 和 "PRIVATE KEY" 即可通过
+			if [[ "$cert_content" == *"-----BEGIN CERTIFICATE-----"* && "$key_content" == *"PRIVATE KEY-----"* ]]; then
+				echo -n "$cert_content" > "$cert_file"
+				echo -n "$key_content" > "$key_file"
+
+				chmod 644 "$cert_file"
+				chmod 600 "$key_file"
+
+				# 识别当前证书类型并显示
+				if [[ "$key_content" == *"EC PRIVATE KEY"* ]]; then
+					echo "检测到 ECC 证书已成功保存。"
+				else
+					echo "检测到 RSA 证书已成功保存。"
+				fi
+				auth_method="ssl_imported"
+			else
+				echo "错误：无效的证书或私钥格式！"
+				certs_status
+			fi
+
+	  		  ;;
+	  	  3)
 	  	  	send_stats "不带证书改用HTTP访问"
 		  	sed -i '/if (\$scheme = http) {/,/}/s/^/#/' /home/web/conf.d/${yuming}.conf
 			sed -i '/ssl_certificate/d; /ssl_certificate_key/d' /home/web/conf.d/${yuming}.conf
@@ -1569,6 +1610,7 @@ certs_status() {
 	  		  ;;
 	  	  *)
 	  	  	send_stats "退出申请"
+			rm -f /home/web/conf.d/${yuming}.conf
 			exit
 	  		  ;;
 		esac
@@ -2503,50 +2545,57 @@ done
 
 
 check_docker_image_update() {
-
 	local container_name=$1
+	update_status=""
 
-	local country=$(curl -s ipinfo.io/country)
-	if [[ "$country" == "CN" ]]; then
-		update_status=""
-		return
-	fi
+	# 1. 区域检查
+	local country=$(curl -s --max-time 2 ipinfo.io/country)
+	[[ "$country" == "CN" ]] && return
 
-	# 获取容器的创建时间和镜像名称
+	# 2. 获取本地镜像信息
 	local container_info=$(docker inspect --format='{{.Created}},{{.Config.Image}}' "$container_name" 2>/dev/null)
+	[[ -z "$container_info" ]] && return
+
 	local container_created=$(echo "$container_info" | cut -d',' -f1)
-	local image_name=$(echo "$container_info" | cut -d',' -f2)
+	local full_image_name=$(echo "$container_info" | cut -d',' -f2)
+	local container_created_ts=$(date -d "$container_created" +%s 2>/dev/null)
 
-	# 提取镜像仓库和标签
-	local image_repo=${image_name%%:*}
-	local image_tag=${image_name##*:}
+	# 3. 智能路由判断
+	if [[ "$full_image_name" == ghcr.io* ]]; then
+		# --- 场景 A: 镜像在 GitHub (ghcr.io) ---
+		# 提取仓库路径，例如 ghcr.io/onexru/oneimg -> onexru/oneimg
+		local repo_path=$(echo "$full_image_name" | sed 's/ghcr.io\///' | cut -d':' -f1)
+		# 注意：ghcr.io 的 API 比较复杂，通常最快的方法是查 GitHub Repo 的 Release
+		local api_url="https://api.github.com/repos/$repo_path/releases/latest"
+		local remote_date=$(curl -s "$api_url" | jq -r '.published_at' 2>/dev/null)
 
-	# 默认标签为 latest
-	[[ "$image_repo" == "$image_tag" ]] && image_tag="latest"
+	elif [[ "$full_image_name" == *"oneimg"* ]]; then
+		# --- 场景 B: 特殊指定 (即便在 Docker Hub，也想通过 GitHub Release 判断) ---
+		local api_url="https://api.github.com/repos/onexru/oneimg/releases/latest"
+		local remote_date=$(curl -s "$api_url" | jq -r '.published_at' 2>/dev/null)
 
-	# 添加对官方镜像的支持
-	[[ "$image_repo" != */* ]] && image_repo="library/$image_repo"
-
-	# 从 Docker Hub API 获取镜像发布时间
-	local hub_info=$(curl -s "https://hub.docker.com/v2/repositories/$image_repo/tags/$image_tag")
-	local last_updated=$(echo "$hub_info" | jq -r '.last_updated' 2>/dev/null)
-
-	# 验证获取的时间
-	if [[ -n "$last_updated" && "$last_updated" != "null" ]]; then
-		local container_created_ts=$(date -d "$container_created" +%s 2>/dev/null)
-		local last_updated_ts=$(date -d "$last_updated" +%s 2>/dev/null)
-
-		# 比较时间戳
-		if [[ $container_created_ts -lt $last_updated_ts ]]; then
-			update_status="${gl_huang}发现新版本!${gl_bai}"
-		else
-			update_status=""
-		fi
 	else
-		update_status=""
+		# --- 场景 C: 标准 Docker Hub ---
+		local image_repo=${full_image_name%%:*}
+		local image_tag=${full_image_name##*:}
+		[[ "$image_repo" == "$image_tag" ]] && image_tag="latest"
+		[[ "$image_repo" != */* ]] && image_repo="library/$image_repo"
+
+		local api_url="https://hub.docker.com/v2/repositories/$image_repo/tags/$image_tag"
+		local remote_date=$(curl -s "$api_url" | jq -r '.last_updated' 2>/dev/null)
 	fi
 
+	# 4. 时间戳对比
+	if [[ -n "$remote_date" && "$remote_date" != "null" ]]; then
+		local remote_ts=$(date -d "$remote_date" +%s 2>/dev/null)
+		if [[ $container_created_ts -lt $remote_ts ]]; then
+			update_status="${gl_huang}发现新版本!${gl_bai}"
+		fi
+	fi
 }
+
+
+
 
 
 
@@ -2847,9 +2896,18 @@ while true; do
 		1)
 			setup_docker_dir
 			check_disk_space $app_size /home/docker
-			read -e -p "输入应用对外服务端口，回车默认使用${docker_port}端口: " app_port
-			local app_port=${app_port:-${docker_port}}
-			local docker_port=$app_port
+			while true; do
+				read -e -p "输入应用对外服务端口，回车默认使用${docker_port}端口: " app_port
+				local app_port=${app_port:-${docker_port}}
+
+				if ss -tuln | grep -q ":$app_port "; then
+					echo -e "${gl_hong}错误: ${gl_bai}端口 $app_port 已被占用，请更换一个端口"
+					send_stats "应用端口已被占用"
+				else
+					local docker_port=$app_port
+					break
+				fi
+			done
 
 			install jq
 			install_docker
@@ -2960,34 +3018,50 @@ docker_app_plus() {
 			1)
 				setup_docker_dir
 				check_disk_space $app_size /home/docker
-				read -e -p "输入应用对外服务端口，回车默认使用${docker_port}端口: " app_port
-				local app_port=${app_port:-${docker_port}}
-				local docker_port=$app_port
+				
+				while true; do
+					read -e -p "输入应用对外服务端口，回车默认使用${docker_port}端口: " app_port
+					local app_port=${app_port:-${docker_port}}
+
+					if ss -tuln | grep -q ":$app_port "; then
+						echo -e "${gl_hong}错误: ${gl_bai}端口 $app_port 已被占用，请更换一个端口"
+						send_stats "应用端口已被占用"
+					else
+						local docker_port=$app_port
+						break
+					fi
+				done
+
 				install jq
 				install_docker
 				docker_app_install
 				echo "$docker_port" > "/home/docker/${docker_name}_port.conf"
 
 				add_app_id
+				send_stats "$app_name 安装"
 				;;
+
 			2)
 				docker_app_update
-
 				add_app_id
+				send_stats "$app_name 更新"
 				;;
+
 			3)
 				docker_app_uninstall
 				rm -f /home/docker/${docker_name}_port.conf
 
 				sed -i "/\b${app_id}\b/d" /home/docker/appno.txt
-
+				send_stats "$app_name 卸载"
 				;;
+
 			5)
 				echo "${docker_name}域名访问设置"
 				send_stats "${docker_name}域名访问设置"
 				add_yuming
 				ldnmp_Proxy ${yuming} 127.0.0.1 ${docker_port}
 				block_container_port "$docker_name" "$ipv4_address"
+
 				;;
 			6)
 				echo "域名格式 example.com 不带https://"
@@ -3376,10 +3450,6 @@ ldnmp_Proxy() {
 	wget -O /home/web/conf.d/map.conf ${gh_proxy}raw.githubusercontent.com/kejilion/nginx/main/map.conf
 	wget -O /home/web/conf.d/$yuming.conf ${gh_proxy}raw.githubusercontent.com/kejilion/nginx/main/reverse-proxy-backend.conf
 
-	install_ssltls
-	certs_status
-
-
 	backend=$(tr -dc 'A-Za-z' < /dev/urandom | head -c 8)
 	sed -i "s/backend_yuming_com/backend_$backend/g" /home/web/conf.d/"$yuming".conf
 
@@ -3394,6 +3464,9 @@ ldnmp_Proxy() {
 
 	sed -i "s/# 动态添加/$upstream_servers/g" /home/web/conf.d/$yuming.conf
 	sed -i '/remote_addr/d' /home/web/conf.d/$yuming.conf
+
+	install_ssltls
+	certs_status
 
 	update_nginx_listen_port "$yuming" "$access_port"
 
@@ -3425,10 +3498,6 @@ ldnmp_Proxy_backend() {
 	wget -O /home/web/conf.d/map.conf ${gh_proxy}raw.githubusercontent.com/kejilion/nginx/main/map.conf
 	wget -O /home/web/conf.d/$yuming.conf ${gh_proxy}raw.githubusercontent.com/kejilion/nginx/main/reverse-proxy-backend.conf
 
-
-	install_ssltls
-	certs_status
-
 	backend=$(tr -dc 'A-Za-z' < /dev/urandom | head -c 8)
 	sed -i "s/backend_yuming_com/backend_$backend/g" /home/web/conf.d/"$yuming".conf
 
@@ -3441,6 +3510,9 @@ ldnmp_Proxy_backend() {
 	done
 
 	sed -i "s/# 动态添加/$upstream_servers/g" /home/web/conf.d/$yuming.conf
+
+	install_ssltls
+	certs_status
 
 	update_nginx_listen_port "$yuming" "$access_port"
 
@@ -4871,6 +4943,7 @@ dd_xitong() {
 
 		dd_xitong_1() {
 		  echo -e "重装后初始用户名: ${gl_huang}root${gl_bai}  初始密码: ${gl_huang}LeitboGi0ro${gl_bai}  初始端口: ${gl_huang}22${gl_bai}"
+		  echo -e "${gl_huang}重装后请及时修改初始密码，防止暴力入侵。命令行输入passwd修改密码${gl_bai}"
 		  echo -e "按任意键继续..."
 		  read -n 1 -s -r -p ""
 		  install wget
@@ -4904,7 +4977,9 @@ dd_xitong() {
 			echo "重装系统"
 			echo "--------------------------------"
 			echo -e "${gl_hong}注意: ${gl_bai}重装有风险失联，不放心者慎用。重装预计花费15分钟，请提前备份数据。"
-			echo -e "${gl_hui}感谢leitbogioro大佬和bin456789大佬的脚本支持！${gl_bai} "
+			echo -e "${gl_hui}感谢bin456789大佬和leitbogioro大佬的脚本支持！${gl_bai} "
+			echo -e "${gl_hui}bin456789项目地址: https://github.com/bin456789/reinstall${gl_bai}"
+			echo -e "${gl_hui}leitbogioro项目地址: https://github.com/leitbogioro/Tools${gl_bai}"
 			echo "------------------------"
 			echo "1. Debian 13                  2. Debian 12"
 			echo "3. Debian 11                  4. Debian 10"
@@ -6896,7 +6971,7 @@ linux_tools() {
 	  echo -e "${gl_kjlan}11.  ${gl_bai}btop 现代化监控工具 ${gl_huang}★${gl_bai}             ${gl_kjlan}12.  ${gl_bai}ranger 文件管理工具"
 	  echo -e "${gl_kjlan}13.  ${gl_bai}ncdu 磁盘占用查看工具             ${gl_kjlan}14.  ${gl_bai}fzf 全局搜索工具"
 	  echo -e "${gl_kjlan}15.  ${gl_bai}vim 文本编辑器                    ${gl_kjlan}16.  ${gl_bai}nano 文本编辑器 ${gl_huang}★${gl_bai}"
-	  echo -e "${gl_kjlan}17.  ${gl_bai}git 版本控制系统"
+	  echo -e "${gl_kjlan}17.  ${gl_bai}git 版本控制系统                  ${gl_kjlan}18.  ${gl_bai}opencode AI编程助手 ${gl_huang}★${gl_bai}"
 	  echo -e "${gl_kjlan}------------------------"
 	  echo -e "${gl_kjlan}21.  ${gl_bai}黑客帝国屏保                      ${gl_kjlan}22.  ${gl_bai}跑火车屏保"
 	  echo -e "${gl_kjlan}26.  ${gl_bai}俄罗斯方块小游戏                  ${gl_kjlan}27.  ${gl_bai}贪吃蛇小游戏"
@@ -7055,6 +7130,17 @@ linux_tools() {
 			  send_stats "安装git"
 			  ;;
 
+			18)
+			  clear
+			  cd ~
+			  curl -fsSL https://opencode.ai/install | bash
+			  source ~/.bashrc
+			  source ~/.profile
+			  opencode
+			  send_stats "安装opencode"
+			  ;;
+
+
 			21)
 			  clear
 			  install cmatrix
@@ -7083,6 +7169,7 @@ linux_tools() {
 			  nsnake
 			  send_stats "安装nsnake"
 			  ;;
+
 			28)
 			  clear
 			  install ninvaders
@@ -7108,6 +7195,8 @@ linux_tools() {
 			  clear
 			  send_stats "全部卸载"
 			  remove htop iftop tmux ffmpeg btop ranger ncdu fzf cmatrix sl bastet nsnake ninvaders vim nano git
+			  opencode uninstall
+			  rm -rf ~/.opencode
 			  ;;
 
 		  41)
@@ -9186,16 +9275,25 @@ linux_ldnmp() {
 
 linux_panel() {
 
-
 local sub_choice="$1"
 
+clear
+cd ~
+install git
+if [ ! -d apps/.git ]; then
+	git clone ${gh_proxy}github.com/kejilion/apps.git
+else
+	cd apps
+	# git pull origin main > /dev/null 2>&1
+	git pull ${gh_proxy}github.com/kejilion/apps.git main > /dev/null 2>&1
+fi
 
 while true; do
 
 	if [ -z "$sub_choice" ]; then
 	  clear
 	  echo -e "应用市场"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 
 	  local app_numbers=$([ -f /home/docker/appno.txt ] && cat /home/docker/appno.txt || echo "")
 
@@ -9213,69 +9311,93 @@ while true; do
 	  echo -e "${gl_kjlan}5.   ${color5}OpenList多存储文件列表程序          ${gl_kjlan}6.   ${color6}Ubuntu远程桌面网页版"
 	  echo -e "${gl_kjlan}7.   ${color7}哪吒探针VPS监控面板                 ${gl_kjlan}8.   ${color8}QB离线BT磁力下载面板"
 	  echo -e "${gl_kjlan}9.   ${color9}Poste.io邮件服务器程序              ${gl_kjlan}10.  ${color10}RocketChat多人在线聊天系统"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}11.  ${color11}禅道项目管理软件                    ${gl_kjlan}12.  ${color12}青龙面板定时任务管理平台"
 	  echo -e "${gl_kjlan}13.  ${color13}Cloudreve网盘 ${gl_huang}★${gl_bai}                     ${gl_kjlan}14.  ${color14}简单图床图片管理程序"
 	  echo -e "${gl_kjlan}15.  ${color15}emby多媒体管理系统                  ${gl_kjlan}16.  ${color16}Speedtest测速面板"
 	  echo -e "${gl_kjlan}17.  ${color17}AdGuardHome去广告软件               ${gl_kjlan}18.  ${color18}onlyoffice在线办公OFFICE"
 	  echo -e "${gl_kjlan}19.  ${color19}雷池WAF防火墙面板                   ${gl_kjlan}20.  ${color20}portainer容器管理面板"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}21.  ${color21}VScode网页版                        ${gl_kjlan}22.  ${color22}UptimeKuma监控工具"
 	  echo -e "${gl_kjlan}23.  ${color23}Memos网页备忘录                     ${gl_kjlan}24.  ${color24}Webtop远程桌面网页版 ${gl_huang}★${gl_bai}"
 	  echo -e "${gl_kjlan}25.  ${color25}Nextcloud网盘                       ${gl_kjlan}26.  ${color26}QD-Today定时任务管理框架"
 	  echo -e "${gl_kjlan}27.  ${color27}Dockge容器堆栈管理面板              ${gl_kjlan}28.  ${color28}LibreSpeed测速工具"
 	  echo -e "${gl_kjlan}29.  ${color29}searxng聚合搜索站 ${gl_huang}★${gl_bai}                 ${gl_kjlan}30.  ${color30}PhotoPrism私有相册系统"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}31.  ${color31}StirlingPDF工具大全                 ${gl_kjlan}32.  ${color32}drawio免费的在线图表软件 ${gl_huang}★${gl_bai}"
 	  echo -e "${gl_kjlan}33.  ${color33}Sun-Panel导航面板                   ${gl_kjlan}34.  ${color34}Pingvin-Share文件分享平台"
 	  echo -e "${gl_kjlan}35.  ${color35}极简朋友圈                          ${gl_kjlan}36.  ${color36}LobeChatAI聊天聚合网站"
 	  echo -e "${gl_kjlan}37.  ${color37}MyIP工具箱 ${gl_huang}★${gl_bai}                        ${gl_kjlan}38.  ${color38}小雅alist全家桶"
 	  echo -e "${gl_kjlan}39.  ${color39}Bililive直播录制工具                ${gl_kjlan}40.  ${color40}webssh网页版SSH连接工具"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}41.  ${color41}耗子管理面板                	 ${gl_kjlan}42.  ${color42}Nexterm远程连接工具"
 	  echo -e "${gl_kjlan}43.  ${color43}RustDesk远程桌面(服务端) ${gl_huang}★${gl_bai}          ${gl_kjlan}44.  ${color44}RustDesk远程桌面(中继端) ${gl_huang}★${gl_bai}"
 	  echo -e "${gl_kjlan}45.  ${color45}Docker加速站            		 ${gl_kjlan}46.  ${color46}GitHub加速站 ${gl_huang}★${gl_bai}"
 	  echo -e "${gl_kjlan}47.  ${color47}普罗米修斯监控			 ${gl_kjlan}48.  ${color48}普罗米修斯(主机监控)"
 	  echo -e "${gl_kjlan}49.  ${color49}普罗米修斯(容器监控)		 ${gl_kjlan}50.  ${color50}补货监控工具"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}51.  ${color51}PVE开小鸡面板			 ${gl_kjlan}52.  ${color52}DPanel容器管理面板"
 	  echo -e "${gl_kjlan}53.  ${color53}llama3聊天AI大模型                  ${gl_kjlan}54.  ${color54}AMH主机建站管理面板"
 	  echo -e "${gl_kjlan}55.  ${color55}FRP内网穿透(服务端) ${gl_huang}★${gl_bai}	         ${gl_kjlan}56.  ${color56}FRP内网穿透(客户端) ${gl_huang}★${gl_bai}"
 	  echo -e "${gl_kjlan}57.  ${color57}Deepseek聊天AI大模型                ${gl_kjlan}58.  ${color58}Dify大模型知识库 ${gl_huang}★${gl_bai}"
 	  echo -e "${gl_kjlan}59.  ${color59}NewAPI大模型资产管理                ${gl_kjlan}60.  ${color60}JumpServer开源堡垒机"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}61.  ${color61}在线翻译服务器			 ${gl_kjlan}62.  ${color62}RAGFlow大模型知识库"
 	  echo -e "${gl_kjlan}63.  ${color63}OpenWebUI自托管AI平台 ${gl_huang}★${gl_bai}             ${gl_kjlan}64.  ${color64}it-tools工具箱"
 	  echo -e "${gl_kjlan}65.  ${color65}n8n自动化工作流平台 ${gl_huang}★${gl_bai}               ${gl_kjlan}66.  ${color66}yt-dlp视频下载工具"
 	  echo -e "${gl_kjlan}67.  ${color67}ddns-go动态DNS管理工具 ${gl_huang}★${gl_bai}            ${gl_kjlan}68.  ${color68}AllinSSL证书管理平台"
 	  echo -e "${gl_kjlan}69.  ${color69}SFTPGo文件传输工具                  ${gl_kjlan}70.  ${color70}AstrBot聊天机器人框架"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}71.  ${color71}Navidrome私有音乐服务器             ${gl_kjlan}72.  ${color72}bitwarden密码管理器 ${gl_huang}★${gl_bai}"
 	  echo -e "${gl_kjlan}73.  ${color73}LibreTV私有影视                     ${gl_kjlan}74.  ${color74}MoonTV私有影视"
 	  echo -e "${gl_kjlan}75.  ${color75}Melody音乐精灵                      ${gl_kjlan}76.  ${color76}在线DOS老游戏"
 	  echo -e "${gl_kjlan}77.  ${color77}迅雷离线下载工具                    ${gl_kjlan}78.  ${color78}PandaWiki智能文档管理系统"
 	  echo -e "${gl_kjlan}79.  ${color79}Beszel服务器监控                    ${gl_kjlan}80.  ${color80}linkwarden书签管理"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}81.  ${color81}JitsiMeet视频会议                   ${gl_kjlan}82.  ${color82}gpt-load高性能AI透明代理"
 	  echo -e "${gl_kjlan}83.  ${color83}komari服务器监控工具                ${gl_kjlan}84.  ${color84}Wallos个人财务管理工具"
 	  echo -e "${gl_kjlan}85.  ${color85}immich图片视频管理器                ${gl_kjlan}86.  ${color86}jellyfin媒体管理系统"
 	  echo -e "${gl_kjlan}87.  ${color87}SyncTV一起看片神器                  ${gl_kjlan}88.  ${color88}Owncast自托管直播平台"
 	  echo -e "${gl_kjlan}89.  ${color89}FileCodeBox文件快递                 ${gl_kjlan}90.  ${color90}matrix去中心化聊天协议"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}91.  ${color91}gitea私有代码仓库                   ${gl_kjlan}92.  ${color92}FileBrowser文件管理器"
 	  echo -e "${gl_kjlan}93.  ${color93}Dufs极简静态文件服务器              ${gl_kjlan}94.  ${color94}Gopeed高速下载工具"
 	  echo -e "${gl_kjlan}95.  ${color95}paperless文档管理平台               ${gl_kjlan}96.  ${color96}2FAuth自托管二步验证器"
 	  echo -e "${gl_kjlan}97.  ${color97}WireGuard组网(服务端)               ${gl_kjlan}98.  ${color98}WireGuard组网(客户端)"
 	  echo -e "${gl_kjlan}99.  ${color99}DSM群晖虚拟机                       ${gl_kjlan}100. ${color100}Syncthing点对点文件同步工具"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}101. ${color101}AI视频生成工具                      ${gl_kjlan}102. ${color102}VoceChat多人在线聊天系统"
 	  echo -e "${gl_kjlan}103. ${color103}Umami网站统计工具                   ${gl_kjlan}104. ${color104}Stream四层代理转发工具"
 	  echo -e "${gl_kjlan}105. ${color105}思源笔记                            ${gl_kjlan}106. ${color106}Drawnix开源白板工具"
 	  echo -e "${gl_kjlan}107. ${color107}PanSou网盘搜索                      ${gl_kjlan}108. ${color108}LangBot聊天机器人"
 	  echo -e "${gl_kjlan}109. ${color109}ZFile在线网盘                       ${gl_kjlan}110. ${color110}Karakeep书签管理"
-	  echo -e "${gl_kjlan}------------------------"
-	  echo -e "${gl_kjlan}111. ${color111}多格式文件转换工具"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
+	  echo -e "${gl_kjlan}111. ${color111}多格式文件转换工具                  ${gl_kjlan}112. ${color112}Lucky大内网穿透工具"
+	  echo -e "${gl_kjlan}113. ${color113}Firefox浏览器"
+	  echo -e "${gl_kjlan}-------------------------"
+	  echo -e "${gl_kjlan}第三方应用列表"
+  	  echo -e "${gl_kjlan}想要让你的应用出现在这里？查看开发者指南: ${gl_huang}https://dev.kejilion.sh/${gl_bai}"
+
+	  for f in "$HOME"/apps/*.conf; do
+		  [ -e "$f" ] || continue
+		  local base_name=$(basename "$f" .conf)
+		  # 获取应用描述
+		  local app_text=$(grep "app_text=" "$f" | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+
+		  # 检查安装状态 (匹配 appno.txt 中的 ID)
+		  # 这里假设 appno.txt 中记录的是 base_name (即文件名)
+		  if echo "$app_numbers" | grep -q "^$base_name$"; then
+			  # 如果已安装：显示 base_name - 描述 [已安装] (绿色)
+			  echo -e "${gl_kjlan}$base_name${gl_bai} - ${gl_lv}$app_text [已安装]${gl_bai}"
+		  else
+			  # 如果未安装：正常显示
+			  echo -e "${gl_kjlan}$base_name${gl_bai} - $app_text"
+		  fi
+	  done
+
+
+
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}b.   ${gl_bai}备份全部应用数据                    ${gl_kjlan}r.   ${gl_bai}还原全部应用数据"
 	  echo -e "${gl_kjlan}------------------------"
 	  echo -e "${gl_kjlan}0.   ${gl_bai}返回主菜单"
@@ -10106,12 +10228,12 @@ while true; do
 	  23|memos)
 		local app_id="23"
 		local docker_name="memos"
-		local docker_img="ghcr.io/usememos/memos:latest"
+		local docker_img="neosmemo/memos:stable"
 		local docker_port=8023
 
 		docker_rum() {
 
-			docker run -d --name memos -p ${docker_port}:5230 -v /home/docker/memos:/var/opt/memos --restart=always ghcr.io/usememos/memos:latest
+			docker run -d --name memos -p ${docker_port}:5230 -v /home/docker/memos:/var/opt/memos --restart=always neosmemo/memos:stable
 
 		}
 
@@ -10898,7 +11020,7 @@ while true; do
 
 		docker_app_install() {
 			install git
-			mkdir -p  /home/docker/ && cd /home/docker/ && git clone https://github.com/langgenius/dify.git && cd dify/docker && cp .env.example .env
+			mkdir -p  /home/docker/ && cd /home/docker/ && git clone ${gh_proxy}github.com/langgenius/dify.git && cd dify/docker && cp .env.example .env
 			sed -i "s/^EXPOSE_NGINX_PORT=.*/EXPOSE_NGINX_PORT=${docker_port}/; s/^EXPOSE_NGINX_SSL_PORT=.*/EXPOSE_NGINX_SSL_PORT=8858/" /home/docker/dify/docker/.env
 
 			docker compose up -d
@@ -10916,7 +11038,7 @@ while true; do
 		docker_app_update() {
 			cd  /home/docker/dify/docker/ && docker compose down --rmi all
 			cd  /home/docker/dify/
-			git pull origin main
+			git pull ${gh_proxy}github.com/langgenius/dify.git main > /dev/null 2>&1
 			sed -i 's/^EXPOSE_NGINX_PORT=.*/EXPOSE_NGINX_PORT=8058/; s/^EXPOSE_NGINX_SSL_PORT=.*/EXPOSE_NGINX_SSL_PORT=8858/' /home/docker/dify/docker/.env
 			cd  /home/docker/dify/docker/ && docker compose up -d
 		}
@@ -10942,7 +11064,7 @@ while true; do
 
 		docker_app_install() {
 			install git
-			mkdir -p  /home/docker/ && cd /home/docker/ && git clone https://github.com/Calcium-Ion/new-api.git && cd new-api
+			mkdir -p  /home/docker/ && cd /home/docker/ && git clone ${gh_proxy}github.com/Calcium-Ion/new-api.git && cd new-api
 
 			sed -i -e "s/- \"3000:3000\"/- \"${docker_port}:3000\"/g" \
 				   -e 's/container_name: redis/container_name: redis-new-api/g' \
@@ -10959,7 +11081,8 @@ while true; do
 		docker_app_update() {
 			cd  /home/docker/new-api/ && docker compose down --rmi all
 			cd  /home/docker/new-api/
-			git pull origin main
+
+			git pull ${gh_proxy}github.com/Calcium-Ion/new-api.git main > /dev/null 2>&1
 			sed -i -e "s/- \"3000:3000\"/- \"${docker_port}:3000\"/g" \
 				   -e 's/container_name: redis/container_name: redis-new-api/g' \
 				   -e 's/container_name: mysql/container_name: mysql-new-api/g' \
@@ -11059,7 +11182,7 @@ while true; do
 
 		docker_app_install() {
 			install git
-			mkdir -p  /home/docker/ && cd /home/docker/ && git clone https://github.com/infiniflow/ragflow.git && cd ragflow/docker
+			mkdir -p  /home/docker/ && cd /home/docker/ && git clone ${gh_proxy}github.com/infiniflow/ragflow.git && cd ragflow/docker
 			sed -i "s/- 80:80/- ${docker_port}:80/; /- 443:443/d" docker-compose.yml
 			docker compose up -d
 			clear
@@ -11070,7 +11193,7 @@ while true; do
 		docker_app_update() {
 			cd  /home/docker/ragflow/docker/ && docker compose down --rmi all
 			cd  /home/docker/ragflow/
-			git pull origin main
+			git pull ${gh_proxy}github.com/infiniflow/ragflow.git main > /dev/null 2>&1
 			cd  /home/docker/ragflow/docker/
 			sed -i "s/- 80:80/- ${docker_port}:80/; /- 443:443/d" docker-compose.yml
 			docker compose up -d
@@ -12516,7 +12639,7 @@ while true; do
 
 		docker_app_install() {
 			install git
-			mkdir -p  /home/docker/ && cd /home/docker/ && git clone https://github.com/harry0703/MoneyPrinterTurbo.git && cd MoneyPrinterTurbo/
+			mkdir -p  /home/docker/ && cd /home/docker/ && git clone ${gh_proxy}github.com/harry0703/MoneyPrinterTurbo.git && cd MoneyPrinterTurbo/
 			sed -i "s/8501:8501/${docker_port}:8501/g" /home/docker/MoneyPrinterTurbo/docker-compose.yml
 
 			docker compose up -d
@@ -12528,7 +12651,8 @@ while true; do
 		docker_app_update() {
 			cd  /home/docker/MoneyPrinterTurbo/ && docker compose down --rmi all
 			cd  /home/docker/MoneyPrinterTurbo/
-			git pull origin main
+
+			git pull ${gh_proxy}github.com/harry0703/MoneyPrinterTurbo.git main > /dev/null 2>&1
 			sed -i "s/8501:8501/${docker_port}:8501/g" /home/docker/MoneyPrinterTurbo/docker-compose.yml
 			cd  /home/docker/MoneyPrinterTurbo/ && docker compose up -d
 		}
@@ -12583,7 +12707,7 @@ while true; do
 
 		docker_app_install() {
 			install git
-			mkdir -p  /home/docker/ && cd /home/docker/ && git clone https://github.com/umami-software/umami.git && cd umami
+			mkdir -p  /home/docker/ && cd /home/docker/ && git clone ${gh_proxy}github.com/umami-software/umami.git && cd umami
 			sed -i "s/3000:3000/${docker_port}:3000/g" /home/docker/umami/docker-compose.yml
 
 			docker compose up -d
@@ -12597,7 +12721,7 @@ while true; do
 		docker_app_update() {
 			cd  /home/docker/umami/ && docker compose down --rmi all
 			cd  /home/docker/umami/
-			git pull origin main
+			git pull ${gh_proxy}github.com/umami-software/umami.git main > /dev/null 2>&1
 			sed -i "s/8501:8501/${docker_port}:8501/g" /home/docker/umami/docker-compose.yml
 			cd  /home/docker/umami/ && docker compose up -d
 		}
@@ -12726,7 +12850,7 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 
 		docker_app_install() {
 			install git
-			mkdir -p  /home/docker/ && cd /home/docker/ && git clone https://github.com/langbot-app/LangBot && cd LangBot/docker
+			mkdir -p  /home/docker/ && cd /home/docker/ && git clone ${gh_proxy}github.com/langbot-app/LangBot && cd LangBot/docker
 			sed -i "s/5300:5300/${docker_port}:5300/g" /home/docker/LangBot/docker/docker-compose.yaml
 
 			docker compose up -d
@@ -12738,7 +12862,7 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 		docker_app_update() {
 			cd  /home/docker/LangBot/docker && docker compose down --rmi all
 			cd  /home/docker/LangBot/
-			git pull origin main
+			git pull ${gh_proxy}github.com/langbot-app/LangBot main > /dev/null 2>&1
 			sed -i "s/5300:5300/${docker_port}:5300/g" /home/docker/LangBot/docker/docker-compose.yaml
 			cd  /home/docker/LangBot/docker/ && docker compose up -d
 		}
@@ -12796,7 +12920,7 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 
 		docker_app_install() {
 			install git
-			mkdir -p  /home/docker/ && cd /home/docker/ && git clone https://github.com/karakeep-app/karakeep.git && cd karakeep/docker && cp .env.sample .env
+			mkdir -p  /home/docker/ && cd /home/docker/ && git clone ${gh_proxy}github.com/karakeep-app/karakeep.git && cd karakeep/docker && cp .env.sample .env
 			sed -i "s/3000:3000/${docker_port}:3000/g" /home/docker/karakeep/docker/docker-compose.yml
 
 			docker compose up -d
@@ -12808,7 +12932,7 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 		docker_app_update() {
 			cd  /home/docker/karakeep/docker/ && docker compose down --rmi all
 			cd  /home/docker/karakeep/
-			git pull origin main
+			git pull ${gh_proxy}github.com/karakeep-app/karakeep.git main > /dev/null 2>&1
 			sed -i "s/3000:3000/${docker_port}:3000/g" /home/docker/karakeep/docker/docker-compose.yml
 			cd  /home/docker/karakeep/docker/ && docker compose up -d
 		}
@@ -12851,7 +12975,66 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 		  ;;
 
 
+	  112|lucky)
 
+		local app_id="112"
+		local docker_name="lucky"
+		local docker_img="gdy666/lucky:v2"
+		# 由于 Lucky 使用 host 网络模式，这里的端口仅作记录/说明参考，实际由应用自身控制（默认16601）
+		local docker_port=8112
+
+		docker_rum() {
+
+			docker run -d --name=${docker_name} --restart=always \
+				--network host \
+				-v /home/docker/lucky/conf:/app/conf \
+				-v /var/run/docker.sock:/var/run/docker.sock \
+				${docker_img}
+
+			echo "正在等待 Lucky 初始化..."
+			sleep 10
+			docker exec lucky /app/lucky -rSetHttpAdminPort ${docker_port}
+
+		}
+
+		local docker_describe="Lucky 是一个大内网穿透及端口转发管理工具，支持 DDNS、反向代理、WOL 等功能。"
+		local docker_url="项目地址: https://github.com/gdy666/lucky"
+		local docker_use="echo \"默认账号密码: 666\""
+		local docker_passwd=""
+		local app_size="1"
+		docker_app
+
+		  ;;
+
+
+	  113|firefox)
+
+		local app_id="113"
+		local docker_name="firefox"
+		local docker_img="jlesage/firefox:latest"
+		local docker_port=8113
+
+		docker_rum() {
+
+			read -e -p "设置登录密码: " admin_password
+
+			docker run -d --name=${docker_name} --restart=always \
+				-p ${docker_port}:5800 \
+				-v /home/docker/firefox:/config:rw \
+				-e ENABLE_CJK_FONT=1 \
+				-e WEB_AUDIO=1 \
+				-e VNC_PASSWORD="${admin_password}" \
+				${docker_img}
+		}
+
+		local docker_describe="是一个运行在 Docker 中的 Firefox 浏览器，支持通过网页直接访问桌面版浏览器界面。"
+		local docker_url="项目地址: https://github.com/jlesage/docker-firefox"
+		local docker_use=""
+		local docker_passwd=""
+		local app_size="1"
+		docker_app
+
+		  ;;
 
 
 	  b)
@@ -12925,11 +13108,25 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 
 		  ;;
 
-
 	  0)
 		  kejilion
 		  ;;
 	  *)
+		cd ~
+		install git
+		if [ ! -d apps/.git ]; then
+			git clone ${gh_proxy}github.com/kejilion/apps.git
+		else
+			cd apps
+			# git pull origin main > /dev/null 2>&1
+			git pull ${gh_proxy}github.com/kejilion/apps.git main > /dev/null 2>&1
+		fi
+		local custom_app="$HOME/apps/${sub_choice}.conf"
+		if [ -f "$custom_app" ]; then
+			. "$custom_app"
+		else
+			echo -e "${gl_hong}错误: 未找到编号为 ${sub_choice} 的应用配置${gl_bai}"
+		fi
 		  ;;
 	esac
 	break_end
@@ -12937,6 +13134,7 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 
 done
 }
+
 
 
 linux_work() {
@@ -13148,6 +13346,7 @@ switch_mirror() {
 		  --upgrade-software "$upgrade_software" \
 		  --clean-cache "$clean_cache" \
 		  --ignore-backup-tips \
+		  --install-epel true \
 		  --pure-mode
 	else
 		echo "使用官方镜像源..."
@@ -13159,6 +13358,7 @@ switch_mirror() {
 		  --upgrade-software "$upgrade_software" \
 		  --clean-cache "$clean_cache" \
 		  --ignore-backup-tips \
+		  --install-epel true \
 		  --pure-mode
 	fi
 }
@@ -15322,5 +15522,3 @@ else
 			;;
 	esac
 fi
-
-
