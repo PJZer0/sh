@@ -1,5 +1,5 @@
 #!/bin/bash
-sh_v="4.2.9"
+sh_v="4.3.4"
 
 
 gl_hui='\e[37m'
@@ -118,7 +118,7 @@ UserLicenseAgreement() {
 	echo "When using the script for the first time, please read and agree to the User License Agreement."
 	echo "User License Agreement: https://blog.kejilion.pro/user-license-agreement/"
 	echo -e "----------------------"
-	read -r -p "Do you agree to the above terms? (y/n):" user_input
+	read -e -p "Do you agree to the above terms? (y/n):" user_input
 
 
 	if [ "$user_input" = "y" ] || [ "$user_input" = "Y" ]; then
@@ -154,7 +154,7 @@ public_ip=$(get_public_ip)
 isp_info=$(curl -s --max-time 3 http://ipinfo.io/org)
 
 
-if echo "$isp_info" | grep -Eiq 'mobile|unicom|telecom'; then
+if echo "$isp_info" | grep -Eiq 'CHINANET|mobile|unicom|telecom'; then
   ipv4_address=$(get_local_ip)
 else
   ipv4_address="$public_ip"
@@ -546,7 +546,7 @@ while true; do
 		11)
 			send_stats "Enter the container"
 			read -e -p "Please enter the container name:" dockername
-			docker exec $dockername /bin/sh
+			docker exec -it $dockername /bin/sh
 			break_end
 			;;
 		12)
@@ -560,7 +560,7 @@ while true; do
 			echo ""
 			container_ids=$(docker ps -q)
 			echo "------------------------------------------------------------"
-			printf "%-25s %-25s %-25s\n" "容器名称" "网络名称" "IP地址"
+			printf "%-25s %-25s %-25s\n" "Container name" "network name" "IP address"
 			for container_id in $container_ids; do
 				local container_info=$(docker inspect --format '{{ .Name }}{{ range $network, $config := .NetworkSettings.Networks }} {{ $network }} {{ $config.IPAddress }}{{ end }}' "$container_id")
 				local container_name=$(echo "$container_info" | awk '{print $1}')
@@ -881,7 +881,7 @@ close_port() {
 		iptables -D INPUT -p tcp --dport $port -j ACCEPT 2>/dev/null
 		iptables -D INPUT -p udp --dport $port -j ACCEPT 2>/dev/null
 
-		# Add a shutdown rule
+		# Add shutdown rule
 		if ! iptables -C INPUT -p tcp --dport $port -j DROP 2>/dev/null; then
 			iptables -I INPUT 1 -p tcp --dport $port -j DROP
 		fi
@@ -1303,7 +1303,7 @@ ldnmp_v() {
 install_ldnmp_conf() {
 
   # Create necessary directories and files
-  cd /home && mkdir -p web/html web/mysql web/certs web/conf.d web/stream.d web/redis web/log/nginx && touch web/docker-compose.yml
+  cd /home && mkdir -p web/html web/mysql web/certs web/conf.d web/stream.d web/redis web/log/nginx web/letsencrypt && touch web/docker-compose.yml
   wget -O /home/web/nginx.conf ${gh_proxy}raw.githubusercontent.com/kejilion/nginx/main/nginx10.conf
   wget -O /home/web/conf.d/default.conf ${gh_proxy}raw.githubusercontent.com/kejilion/nginx/main/default10.conf
 
@@ -1325,7 +1325,7 @@ update_docker_compose_with_db_creds() {
 
   cp /home/web/docker-compose.yml /home/web/docker-compose1.yml
 
-  if ! grep -q "stream" /home/web/docker-compose.yml; then
+  if ! grep -q "letsencrypt" /home/web/docker-compose.yml; then
 	wget -O /home/web/docker-compose.yml ${gh_proxy}raw.githubusercontent.com/kejilion/docker/main/LNMP-docker-compose-10.yml
 
   	dbrootpasswd=$(grep -oP 'MYSQL_ROOT_PASSWORD:\s*\K.*' /home/web/docker-compose1.yml | tr -d '[:space:]')
@@ -1425,15 +1425,7 @@ install_certbot() {
 }
 
 
-
-
-
-
-
-
-
 install_ssltls() {
-	  check_port > /dev/null 2>&1
 	  docker stop nginx > /dev/null 2>&1
 	  cd ~
 
@@ -1453,6 +1445,7 @@ install_ssltls() {
 				if ! iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null; then
 					iptables -I INPUT 1 -p tcp --dport 80 -j ACCEPT
 				fi
+
 				docker run --rm -p 80:80 -v /etc/letsencrypt/:/etc/letsencrypt certbot/certbot certonly --standalone -d "$yuming" --email your@email.com --agree-tos --no-eff-email --force-renewal --key-type ecdsa
 			fi
 	  fi
@@ -1550,7 +1543,7 @@ certs_status() {
 		echo -e "5. The number of applications exceeds the limit ➠ Let's Encrypt has a weekly limit (5 times/domain name/week)"
 		echo -e "6. Domestic registration restrictions ➠ For mainland China environment, please confirm whether the domain name is registered"
 		echo "------------------------"
-		echo "1. Reapply 2. Switch to HTTP access without certificate 0. Exit"
+		echo "1. Apply again 2. Import the existing certificate 3. Use HTTP access without certificate 0. Exit"
 		echo "------------------------"
 		read -e -p "Please enter your choice:" sub_choice
 		case $sub_choice in
@@ -1560,15 +1553,65 @@ certs_status() {
 		  	add_yuming
 		  	install_ssltls
 		  	certs_status
+
 	  		  ;;
 	  	  2)
+	  	  	send_stats "Import existing certificate"
+
+			# Define file path
+			local cert_file="/home/web/certs/${yuming}_cert.pem"
+			local key_file="/home/web/certs/${yuming}_key.pem"
+
+			mkdir -p /home/web/certs
+
+			# 1. Enter the certificate (both ECC and RSA certificates start with BEGIN CERTIFICATE)
+			echo "Please paste the certificate (CRT/PEM) content (press Enter twice to end):"
+			local cert_content=""
+			while IFS= read -r line; do
+				[[ -z "$line" && "$cert_content" == *"-----BEGIN"* ]] && break
+				cert_content+="${line}"$'\n'
+			done
+
+			# 2. Enter the private key (compatible with RSA, ECC, PKCS#8)
+			echo "Please paste the certificate private key (Private Key) content (press Enter twice to end):"
+			local key_content=""
+			while IFS= read -r line; do
+				[[ -z "$line" && "$key_content" == *"-----BEGIN"* ]] && break
+				key_content+="${line}"$'\n'
+			done
+
+			# 3. Intelligent verification
+			# Just include "BEGIN CERTIFICATE" and "PRIVATE KEY" to pass
+			if [[ "$cert_content" == *"-----BEGIN CERTIFICATE-----"* && "$key_content" == *"PRIVATE KEY-----"* ]]; then
+				echo -n "$cert_content" > "$cert_file"
+				echo -n "$key_content" > "$key_file"
+
+				chmod 644 "$cert_file"
+				chmod 600 "$key_file"
+
+				# Identify the current certificate type and display it
+				if [[ "$key_content" == *"EC PRIVATE KEY"* ]]; then
+					echo "Detected that the ECC certificate was saved successfully."
+				else
+					echo "Detected that the RSA certificate was saved successfully."
+				fi
+				auth_method="ssl_imported"
+			else
+				echo "Error: Invalid certificate or private key format!"
+				certs_status
+			fi
+
+	  		  ;;
+	  	  3)
 	  	  	send_stats "Switch to HTTP access without a certificate"
 		  	sed -i '/if (\$scheme = http) {/,/}/s/^/#/' /home/web/conf.d/${yuming}.conf
 			sed -i '/ssl_certificate/d; /ssl_certificate_key/d' /home/web/conf.d/${yuming}.conf
 			sed -i '/443 ssl/d; /443 quic/d' /home/web/conf.d/${yuming}.conf
 	  		  ;;
 	  	  *)
-	  	  	exit
+	  	  	send_stats "Withdraw application"
+			rm -f /home/web/conf.d/${yuming}.conf
+			exit
 	  		  ;;
 		esac
 	fi
@@ -1813,7 +1856,7 @@ check_waf_status() {
 	if grep -q "^\s*#\s*modsecurity on;" /home/web/nginx.conf; then
 		waf_status=""
 	elif grep -q "modsecurity on;" /home/web/nginx.conf; then
-		waf_status=" WAF已开启"
+		waf_status="WAF is turned on"
 	else
 		waf_status=""
 	fi
@@ -1822,7 +1865,7 @@ check_waf_status() {
 
 check_cf_mode() {
 	if [ -f "/etc/fail2ban/action.d/cloudflare-docker.conf" ]; then
-		CFmessage=" cf模式已开启"
+		CFmessage="cf mode is on"
 	else
 		CFmessage=""
 	fi
@@ -2269,9 +2312,9 @@ check_ldnmp_mode() {
 
 	# Check if MySQL configuration file contains 4096M
 	if docker exec "$MYSQL_CONTAINER" grep -q "4096M" "$MYSQL_CONF" 2>/dev/null; then
-		mode_info=" 高性能模式"
+		mode_info="High performance mode"
 	else
-		mode_info=" 标准模式"
+		mode_info="Standard mode"
 	fi
 
 
@@ -2285,21 +2328,21 @@ check_nginx_compression() {
 
 	# Check whether zstd is on and uncommented (the whole line starts with zstd on;)
 	if grep -qE '^\s*zstd\s+on;' "$CONFIG_FILE"; then
-		zstd_status=" zstd压缩已开启"
+		zstd_status="zstd compression is enabled"
 	else
 		zstd_status=""
 	fi
 
 	# Check if brotli is enabled and uncommented
 	if grep -qE '^\s*brotli\s+on;' "$CONFIG_FILE"; then
-		br_status=" br压缩已开启"
+		br_status="brCompression is on"
 	else
 		br_status=""
 	fi
 
 	# Check if gzip is enabled and uncommented
 	if grep -qE '^\s*gzip\s+on;' "$CONFIG_FILE"; then
-		gzip_status=" gzip压缩已开启"
+		gzip_status="gzip compression is on"
 	else
 		gzip_status=""
 	fi
@@ -2452,9 +2495,9 @@ web_optimization() {
 
 check_docker_app() {
 	if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "$docker_name" ; then
-		check_docker="${gl_lv}已安装${gl_bai}"
+		check_docker="${gl_lv}Installed${gl_bai}"
 	else
-		check_docker="${gl_hui}未安装${gl_bai}"
+		check_docker="${gl_hui}Not installed${gl_bai}"
 	fi
 }
 
@@ -2502,50 +2545,57 @@ done
 
 
 check_docker_image_update() {
-
 	local container_name=$1
+	update_status=""
 
-	local country=$(curl -s ipinfo.io/country)
-	if [[ "$country" == "CN" ]]; then
-		update_status=""
-		return
-	fi
+	# 1. Regional inspection
+	local country=$(curl -s --max-time 2 ipinfo.io/country)
+	[[ "$country" == "CN" ]] && return
 
-	# Get the creation time and image name of the container
+	# 2. Get local mirror information
 	local container_info=$(docker inspect --format='{{.Created}},{{.Config.Image}}' "$container_name" 2>/dev/null)
+	[[ -z "$container_info" ]] && return
+
 	local container_created=$(echo "$container_info" | cut -d',' -f1)
-	local image_name=$(echo "$container_info" | cut -d',' -f2)
+	local full_image_name=$(echo "$container_info" | cut -d',' -f2)
+	local container_created_ts=$(date -d "$container_created" +%s 2>/dev/null)
 
-	# Extract image repository and tags
-	local image_repo=${image_name%%:*}
-	local image_tag=${image_name##*:}
+	# 3. Intelligent routing judgment
+	if [[ "$full_image_name" == ghcr.io* ]]; then
+		# --- Scenario A: Mirror on GitHub (ghcr.io) ---
+		# Extract the warehouse path, for example ghcr.io/onexru/oneimg -> onexru/oneimg
+		local repo_path=$(echo "$full_image_name" | sed 's/ghcr.io\///' | cut -d':' -f1)
+		# Note: The API of ghcr.io is relatively complex. Usually the fastest way is to check the Release of GitHub Repo
+		local api_url="https://api.github.com/repos/$repo_path/releases/latest"
+		local remote_date=$(curl -s "$api_url" | jq -r '.published_at' 2>/dev/null)
 
-	# The default tag is latest
-	[[ "$image_repo" == "$image_tag" ]] && image_tag="latest"
+	elif [[ "$full_image_name" == *"oneimg"* ]]; then
+		# --- Scenario B: Special designation (even in Docker Hub, I want to judge by GitHub Release) ---
+		local api_url="https://api.github.com/repos/onexru/oneimg/releases/latest"
+		local remote_date=$(curl -s "$api_url" | jq -r '.published_at' 2>/dev/null)
 
-	# Add support for official images
-	[[ "$image_repo" != */* ]] && image_repo="library/$image_repo"
-
-	# Get image release time from Docker Hub API
-	local hub_info=$(curl -s "https://hub.docker.com/v2/repositories/$image_repo/tags/$image_tag")
-	local last_updated=$(echo "$hub_info" | jq -r '.last_updated' 2>/dev/null)
-
-	# Verify the time obtained
-	if [[ -n "$last_updated" && "$last_updated" != "null" ]]; then
-		local container_created_ts=$(date -d "$container_created" +%s 2>/dev/null)
-		local last_updated_ts=$(date -d "$last_updated" +%s 2>/dev/null)
-
-		# Compare timestamps
-		if [[ $container_created_ts -lt $last_updated_ts ]]; then
-			update_status="${gl_huang}发现新版本!${gl_bai}"
-		else
-			update_status=""
-		fi
 	else
-		update_status=""
+		# --- Scenario C: Standard Docker Hub ---
+		local image_repo=${full_image_name%%:*}
+		local image_tag=${full_image_name##*:}
+		[[ "$image_repo" == "$image_tag" ]] && image_tag="latest"
+		[[ "$image_repo" != */* ]] && image_repo="library/$image_repo"
+
+		local api_url="https://hub.docker.com/v2/repositories/$image_repo/tags/$image_tag"
+		local remote_date=$(curl -s "$api_url" | jq -r '.last_updated' 2>/dev/null)
 	fi
 
+	# 4. Timestamp comparison
+	if [[ -n "$remote_date" && "$remote_date" != "null" ]]; then
+		local remote_ts=$(date -d "$remote_date" +%s 2>/dev/null)
+		if [[ $container_created_ts -lt $remote_ts ]]; then
+			update_status="${gl_huang}New version found!${gl_bai}"
+		fi
+	fi
 }
+
+
+
 
 
 
@@ -2846,9 +2896,18 @@ while true; do
 		1)
 			setup_docker_dir
 			check_disk_space $app_size /home/docker
-			read -e -p "Enter the application external service port and press Enter to use it by default.${docker_port}port:" app_port
-			local app_port=${app_port:-${docker_port}}
-			local docker_port=$app_port
+			while true; do
+				read -e -p "Enter the application external service port and press Enter to use it by default.${docker_port}port:" app_port
+				local app_port=${app_port:-${docker_port}}
+
+				if ss -tuln | grep -q ":$app_port "; then
+					echo -e "${gl_hong}mistake:${gl_bai}port$app_portAlready occupied, please change a port"
+					send_stats "Application port is occupied"
+				else
+					local docker_port=$app_port
+					break
+				fi
+			done
 
 			install jq
 			install_docker
@@ -2959,34 +3018,50 @@ docker_app_plus() {
 			1)
 				setup_docker_dir
 				check_disk_space $app_size /home/docker
-				read -e -p "Enter the application external service port and press Enter to use it by default.${docker_port}port:" app_port
-				local app_port=${app_port:-${docker_port}}
-				local docker_port=$app_port
+
+				while true; do
+					read -e -p "Enter the application external service port and press Enter to use it by default.${docker_port}port:" app_port
+					local app_port=${app_port:-${docker_port}}
+
+					if ss -tuln | grep -q ":$app_port "; then
+						echo -e "${gl_hong}mistake:${gl_bai}port$app_portAlready occupied, please change a port"
+						send_stats "Application port is occupied"
+					else
+						local docker_port=$app_port
+						break
+					fi
+				done
+
 				install jq
 				install_docker
 				docker_app_install
 				echo "$docker_port" > "/home/docker/${docker_name}_port.conf"
 
 				add_app_id
+				send_stats "$app_nameInstall"
 				;;
+
 			2)
 				docker_app_update
-
 				add_app_id
+				send_stats "$app_namerenew"
 				;;
+
 			3)
 				docker_app_uninstall
 				rm -f /home/docker/${docker_name}_port.conf
 
 				sed -i "/\b${app_id}\b/d" /home/docker/appno.txt
-
+				send_stats "$app_nameuninstall"
 				;;
+
 			5)
 				echo "${docker_name}Domain name access settings"
 				send_stats "${docker_name}Domain name access settings"
 				add_yuming
 				ldnmp_Proxy ${yuming} 127.0.0.1 ${docker_port}
 				block_container_port "$docker_name" "$ipv4_address"
+
 				;;
 			6)
 				echo "Domain name format example.com without https://"
@@ -3112,9 +3187,9 @@ f2b_status_xxx() {
 
 check_f2b_status() {
 	if command -v fail2ban-client >/dev/null 2>&1; then
-		check_f2b_status="${gl_lv}已安装${gl_bai}"
+		check_f2b_status="${gl_lv}Installed${gl_bai}"
 	else
-		check_f2b_status="${gl_hui}未安装${gl_bai}"
+		check_f2b_status="${gl_hui}Not installed${gl_bai}"
 	fi
 }
 
@@ -3349,7 +3424,7 @@ ldnmp_wp() {
 
 ldnmp_Proxy() {
 	clear
-	webname="反向代理-IP+端口"
+	webname="Reverse proxy-IP+port"
 	yuming="${1:-}"
 	reverseproxy="${2:-}"
 	port="${3:-}"
@@ -3375,10 +3450,6 @@ ldnmp_Proxy() {
 	wget -O /home/web/conf.d/map.conf ${gh_proxy}raw.githubusercontent.com/kejilion/nginx/main/map.conf
 	wget -O /home/web/conf.d/$yuming.conf ${gh_proxy}raw.githubusercontent.com/kejilion/nginx/main/reverse-proxy-backend.conf
 
-	install_ssltls
-	certs_status
-
-
 	backend=$(tr -dc 'A-Za-z' < /dev/urandom | head -c 8)
 	sed -i "s/backend_yuming_com/backend_$backend/g" /home/web/conf.d/"$yuming".conf
 
@@ -3391,8 +3462,11 @@ ldnmp_Proxy() {
 		upstream_servers="$upstream_servers    server $server;\n"
 	done
 
-	sed -i "s/# 动态添加/$upstream_servers/g" /home/web/conf.d/$yuming.conf
+	sed -i "s/# dynamically add/$upstream_servers/g" /home/web/conf.d/$yuming.conf
 	sed -i '/remote_addr/d' /home/web/conf.d/$yuming.conf
+
+	install_ssltls
+	certs_status
 
 	update_nginx_listen_port "$yuming" "$access_port"
 
@@ -3405,7 +3479,7 @@ ldnmp_Proxy() {
 
 ldnmp_Proxy_backend() {
 	clear
-	webname="反向代理-负载均衡"
+	webname="Reverse proxy-load balancing"
 
 	send_stats "Install$webname"
 	echo "Start deployment$webname"
@@ -3424,10 +3498,6 @@ ldnmp_Proxy_backend() {
 	wget -O /home/web/conf.d/map.conf ${gh_proxy}raw.githubusercontent.com/kejilion/nginx/main/map.conf
 	wget -O /home/web/conf.d/$yuming.conf ${gh_proxy}raw.githubusercontent.com/kejilion/nginx/main/reverse-proxy-backend.conf
 
-
-	install_ssltls
-	certs_status
-
 	backend=$(tr -dc 'A-Za-z' < /dev/urandom | head -c 8)
 	sed -i "s/backend_yuming_com/backend_$backend/g" /home/web/conf.d/"$yuming".conf
 
@@ -3439,7 +3509,10 @@ ldnmp_Proxy_backend() {
 		upstream_servers="$upstream_servers    server $server;\n"
 	done
 
-	sed -i "s/# 动态添加/$upstream_servers/g" /home/web/conf.d/$yuming.conf
+	sed -i "s/# dynamically add/$upstream_servers/g" /home/web/conf.d/$yuming.conf
+
+	install_ssltls
+	certs_status
 
 	update_nginx_listen_port "$yuming" "$access_port"
 
@@ -3456,7 +3529,7 @@ ldnmp_Proxy_backend() {
 list_stream_services() {
 
 	STREAM_DIR="/home/web/stream.d"
-	printf "%-25s %-18s %-25s %-20s\n" "服务名" "通信类型" "本机地址" "后端地址"
+	printf "%-25s %-18s %-25s %-20s\n" "Service name" "Communication type" "Local address" "Backend address"
 
 	if [ -z "$(ls -A "$STREAM_DIR")" ]; then
 		return
@@ -3579,7 +3652,7 @@ stream_panel() {
 
 ldnmp_Proxy_backend_stream() {
 	clear
-	webname="Stream四层代理-负载均衡"
+	webname="Stream four-layer proxy-load balancing"
 
 	send_stats "Install$webname"
 	echo "Start deployment$webname"
@@ -3623,7 +3696,7 @@ ldnmp_Proxy_backend_stream() {
 		upstream_servers="$upstream_servers    server $server;\n"
 	done
 
-	sed -i "s/# 动态添加/$upstream_servers/g" /home/web/stream.d/$proxy_name.conf
+	sed -i "s/# dynamically add/$upstream_servers/g" /home/web/stream.d/$proxy_name.conf
 
 	docker exec nginx nginx -s reload
 	clear
@@ -3849,7 +3922,7 @@ ldnmp_web_status() {
 
 check_panel_app() {
 if $lujing > /dev/null 2>&1; then
-	check_panel="${gl_lv}已安装${gl_bai}"
+	check_panel="${gl_lv}Installed${gl_bai}"
 else
 	check_panel=""
 fi
@@ -3910,9 +3983,9 @@ done
 check_frp_app() {
 
 if [ -d "/home/frp/" ]; then
-	check_frp="${gl_lv}已安装${gl_bai}"
+	check_frp="${gl_lv}Installed${gl_bai}"
 else
-	check_frp="${gl_hui}未安装${gl_bai}"
+	check_frp="${gl_hui}Not installed${gl_bai}"
 fi
 
 }
@@ -4050,7 +4123,7 @@ list_forwarding_services() {
 	local config_file="$1"
 
 	# Print header
-	printf "%-20s %-25s %-30s %-10s\n" "服务名称" "内网地址" "外网地址" "协议"
+	printf "%-20s %-25s %-30s %-10s\n" "Service name" "Intranet address" "External network address" "protocol"
 
 	awk '
 	BEGIN {
@@ -4383,9 +4456,9 @@ yt_menu_pro() {
 	while true; do
 
 		if [ -x "/usr/local/bin/yt-dlp" ]; then
-		   local YTDLP_STATUS="${gl_lv}已安装${gl_bai}"
+		   local YTDLP_STATUS="${gl_lv}Installed${gl_bai}"
 		else
-		   local YTDLP_STATUS="${gl_hui}未安装${gl_bai}"
+		   local YTDLP_STATUS="${gl_hui}Not installed${gl_bai}"
 		fi
 
 		clear
@@ -4779,13 +4852,12 @@ new_ssh_port() {
 }
 
 
-
 add_sshkey() {
 	chmod 700 ~/
 	mkdir -p ~/.ssh
 	chmod 700 ~/.ssh
 	touch ~/.ssh/authorized_keys
-	ssh-keygen -t ed25519 -C "xxxx@gmail.com" -f /root/.ssh/sshkey -N ""
+	ssh-keygen -t ed25519 -C "xxxx@gmail.com" -f ~/.ssh/sshkey -N ""
 	cat ~/.ssh/sshkey.pub >> ~/.ssh/authorized_keys
 	chmod 600 ~/.ssh/authorized_keys
 
@@ -4807,13 +4879,30 @@ add_sshkey() {
 }
 
 
+
+
+
 import_sshkey() {
 
-	read -e -p "Please enter the contents of your SSH public key (usually starts with 'ssh-rsa' or 'ssh-ed25519'):" public_key
+	local public_key="$1"
+
+	if [[ -z "$public_key" ]]; then
+		read -e -p "Please enter the contents of your SSH public key (usually starts with 'ssh-rsa' or 'ssh-ed25519'):" public_key
+	fi
 
 	if [[ -z "$public_key" ]]; then
 		echo -e "${gl_hong}Error: Public key content not entered.${gl_bai}"
 		return 1
+	fi
+
+	if [[ ! "$public_key" =~ ^ssh-(rsa|ed25519|ecdsa) ]]; then
+		echo -e "${gl_hong}Error: Does not look like a legitimate SSH public key.${gl_bai}"
+		return 1
+	fi	
+
+	if grep -Fxq "$public_key" ~/.ssh/authorized_keys 2>/dev/null; then
+		echo "The public key already exists, no need to add it again"
+		return 0
 	fi
 
 	chmod 700 ~/
@@ -4833,6 +4922,206 @@ import_sshkey() {
 	echo -e "${gl_lv}The public key has been successfully imported, ROOT private key login has been enabled, and ROOT password login has been closed. Reconnection will take effect.${gl_bai}"
 
 }
+
+
+fetch_remote_ssh_keys() {
+
+	local keys_url="$1"
+	local authorized_keys="${HOME}/.ssh/authorized_keys"
+	local temp_file
+
+	if [[ -z "${keys_url}" ]]; then
+		read -e -p "Please enter your remote public key URL:" keys_url
+	fi
+
+	echo "This script will pull the SSH public key from the remote URL and add it to${authorized_keys}"
+	echo ""
+	echo "Remote public key address:"
+	echo "  ${keys_url}"
+	echo ""
+
+	# Create temporary files
+	temp_file=$(mktemp)
+
+	# Download public key
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsSL --connect-timeout 10 "${keys_url}" -o "${temp_file}" || {
+			echo "Error: Unable to download public key from URL (network issue or invalid address)" >&2
+			rm -f "${temp_file}"
+			return 1
+		}
+	elif command -v wget >/dev/null 2>&1; then
+		wget -q --timeout=10 -O "${temp_file}" "${keys_url}" || {
+			echo "Error: Unable to download public key from URL (network issue or invalid address)" >&2
+			rm -f "${temp_file}"
+			return 1
+		}
+	else
+		echo "Error: curl or wget not found in system, unable to download public key" >&2
+		rm -f "${temp_file}"
+		return 1
+	fi
+
+	# Check if content is valid
+	if [[ ! -s "${temp_file}" ]]; then
+		echo "Error: The downloaded file is empty and the URL may not contain any public key" >&2
+		rm -f "${temp_file}"
+		return 1
+	fi
+
+	mkdir -p ~/.ssh
+	chmod 700 ~/.ssh
+	touch "${authorized_keys}"
+	chmod 600 "${authorized_keys}"
+
+	# Back up original authorized_keys
+	if [[ -f "${authorized_keys}" ]]; then
+		cp "${authorized_keys}" "${authorized_keys}.bak.$(date +%Y%m%d-%H%M%S)"
+		echo "The original authorized_keys file has been backed up"
+	fi
+
+	# Append public key (avoid duplication)
+	local added=0
+	while IFS= read -r line; do
+		[[ -z "${line}" || "${line}" =~ ^# ]] && continue
+
+		if ! grep -Fxq "${line}" "${authorized_keys}" 2>/dev/null; then
+			echo "${line}" >> "${authorized_keys}"
+			((added++))
+		fi
+	done < "${temp_file}"
+
+	rm -f "${temp_file}"
+
+	echo ""
+	if (( added > 0 )); then
+		echo "successfully added${added}A new public key arrives${authorized_keys}"
+		sed -i -e 's/^\s*#\?\s*PermitRootLogin .*/PermitRootLogin prohibit-password/' \
+			   -e 's/^\s*#\?\s*PasswordAuthentication .*/PasswordAuthentication no/' \
+			   -e 's/^\s*#\?\s*PubkeyAuthentication .*/PubkeyAuthentication yes/' \
+			   -e 's/^\s*#\?\s*ChallengeResponseAuthentication .*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
+
+		rm -rf /etc/ssh/sshd_config.d/* /etc/ssh/ssh_config.d/*
+		restart_ssh
+	else
+		echo "No new public keys need to be added (all may already exist)"
+	fi
+
+	echo ""
+}
+
+
+
+fetch_github_ssh_keys() {
+
+	local username="$1"
+
+	echo "Before proceeding, make sure you have added your SSH public key to your GitHub account:"
+	echo "1. Log in to https://github.com/settings/keys"
+	echo "2. Click New SSH key or Add SSH key"
+	echo "3. Title can be filled in as desired (for example: Home Laptop 2026)"
+	echo "4. Paste the contents of the local public key (usually the entire contents of ~/.ssh/id_ed25519.pub or id_rsa.pub) into the Key field"
+	echo "5. Click Add SSH key to complete the addition."
+	echo ""
+	echo "Once added, all your public keys will be publicly available on GitHub at:"
+	echo "https://github.com/yourusername.keys"
+	echo ""
+
+
+	if [[ -z "${username}" ]]; then
+		read -e -p "Please enter your GitHub username (username without @):" username
+	fi
+
+	if [[ -z "${username}" ]]; then
+		echo "Error: GitHub username cannot be empty" >&2
+		return 1
+	fi
+
+	keys_url="https://github.com/${username}.keys"
+
+	fetch_remote_ssh_keys "${keys_url}"
+
+}
+
+
+
+
+sshkey_panel() {
+
+  root_use
+  send_stats "Private key login"
+  while true; do
+	  clear
+	  local REAL_STATUS=$(grep -i "^PubkeyAuthentication" /etc/ssh/sshd_config | tr '[:upper:]' '[:lower:]')
+	  if [[ "$REAL_STATUS" =~ "yes" ]]; then
+		  IS_KEY_ENABLED="${gl_lv}Enabled${gl_bai}"
+	  else
+	  	  IS_KEY_ENABLED="${gl_hui}Not enabled${gl_bai}"
+	  fi
+  	  echo -e "ROOT private key login mode${IS_KEY_ENABLED}"
+  	  echo "Video introduction: https://www.bilibili.com/video/BV1Q4421X78n?t=209.4"
+  	  echo "------------------------------------------------"
+  	  echo "A key pair will be generated, a more secure way to log in via SSH"
+	  echo "------------------------"
+	  echo "1. Generate a new key pair 2. Manually enter an existing public key"
+	  echo "3. Import the existing public key from GitHub 4. Import the existing public key from the URL"
+	  echo "5. Edit the public key file 6. View the local key"
+	  echo "------------------------"
+	  echo "0. Return to the previous menu"
+	  echo "------------------------"
+	  read -e -p "Please enter your choice:" host_dns
+	  case $host_dns in
+		  1)
+	  		send_stats "Generate new key"
+	  		add_sshkey
+			break_end
+			  ;;
+		  2)
+			send_stats "Import existing public key"
+			import_sshkey
+			break_end
+			  ;;
+		  3)
+			send_stats "Import GitHub remote public key"
+			fetch_github_ssh_keys
+			break_end
+			  ;;
+		  4)
+			send_stats "Import URL remote public key"
+			read -e -p "Please enter your remote public key URL:" keys_url
+			fetch_remote_ssh_keys "${keys_url}"
+			break_end
+			  ;;
+
+		  5)
+			send_stats "Edit public key file"
+			install nano
+			nano ~/.ssh/authorized_keys
+			break_end
+			  ;;
+
+		  6)
+			send_stats "View local key"
+			echo "------------------------"
+			echo "Public key information"
+			cat ~/.ssh/authorized_keys
+			echo "------------------------"
+			echo "Private key information"
+			cat ~/.ssh/sshkey
+			echo "------------------------"
+			break_end
+			  ;;
+		  *)
+			  break  # 跳出循环，退出菜单
+			  ;;
+	  esac
+  done
+
+
+}
+
+
+
 
 
 
@@ -4870,6 +5159,7 @@ dd_xitong() {
 
 		dd_xitong_1() {
 		  echo -e "Initial username after reinstallation:${gl_huang}root${gl_bai}Initial password:${gl_huang}LeitboGi0ro${gl_bai}Initial port:${gl_huang}22${gl_bai}"
+		  echo -e "${gl_huang}After reinstallation, please change the initial password in time to prevent violent intrusion. Enter passwd on the command line to change the password.${gl_bai}"
 		  echo -e "Press any key to continue..."
 		  read -n 1 -s -r -p ""
 		  install wget
@@ -4903,7 +5193,9 @@ dd_xitong() {
 			echo "Reinstall the system"
 			echo "--------------------------------"
 			echo -e "${gl_hong}Notice:${gl_bai}Reinstalling may cause loss of connection, so use with caution if you are worried. Reinstallation is expected to take 15 minutes, please back up your data in advance."
-			echo -e "${gl_hui}Thanks to boss leitbogioro and boss bin456789 for their script support!${gl_bai} "
+			echo -e "${gl_hui}Thanks to boss bin456789 and boss leitbogioro for their script support!${gl_bai} "
+			echo -e "${gl_hui}bin456789 project address: https://github.com/bin456789/reinstall${gl_bai}"
+			echo -e "${gl_hui}leitbogioro project address: https://github.com/leitbogioro/Tools${gl_bai}"
 			echo "------------------------"
 			echo "1. Debian 13                  2. Debian 12"
 			echo "3. Debian 11                  4. Debian 10"
@@ -5464,7 +5756,7 @@ clamav_scan() {
 		clamav/clamav-debian:latest \
 		clamscan -r --log=/var/log/clamav/scan.log $SCAN_PARAMS
 
-	echo -e "${gl_lv}$@ The scan is completed and the virus report is stored in${gl_huang}/home/docker/clamav/log/scan.log${gl_bai}"
+	echo -e "${gl_lv}$@ 扫描完成，病毒报告存放在${gl_huang}/home/docker/clamav/log/scan.log${gl_bai}"
 	echo -e "${gl_lv}If there is a virus please${gl_huang}scan.log${gl_lv}Search the file for the FOUND keyword to confirm the location of the virus${gl_bai}"
 
 }
@@ -5719,7 +6011,7 @@ Kernel_optimize() {
 		  1)
 			  cd ~
 			  clear
-			  local tiaoyou_moshi="高性能优化模式"
+			  local tiaoyou_moshi="High performance optimization mode"
 			  optimize_high_performance
 			  send_stats "High performance mode optimization"
 			  ;;
@@ -5738,14 +6030,14 @@ Kernel_optimize() {
 		  4)
 			  cd ~
 			  clear
-			  local tiaoyou_moshi="直播优化模式"
+			  local tiaoyou_moshi="Live broadcast optimization mode"
 			  optimize_high_performance
 			  send_stats "Live streaming optimization"
 			  ;;
 		  5)
 			  cd ~
 			  clear
-			  local tiaoyou_moshi="游戏服优化模式"
+			  local tiaoyou_moshi="Game server optimization mode"
 			  optimize_high_performance
 			  send_stats "Game server optimization"
 			  ;;
@@ -5933,9 +6225,9 @@ linux_trash() {
 
 	local trash_status
 	if ! grep -q "trash-put" "$bashrc_profile"; then
-		trash_status="${gl_hui}未启用${gl_bai}"
+		trash_status="${gl_hui}Not enabled${gl_bai}"
 	else
-		trash_status="${gl_lv}已启用${gl_bai}"
+		trash_status="${gl_lv}Enabled${gl_bai}"
 	fi
 
 	clear
@@ -6006,7 +6298,7 @@ create_backup() {
 	echo "- Back up a single directory: /var/www"
 	echo "- Back up multiple directories: /etc /home /var/log"
 	echo "- Press Enter to use the default directory (/etc /usr /home)"
-	read -r -p "Please enter the directory to be backed up (separate multiple directories with spaces, and press Enter to use the default directory):" input
+	read -e -p "Please enter the directory to be backed up (separate multiple directories with spaces, and press Enter to use the default directory):" input
 
 	# If the user does not enter a directory, the default directory is used
 	if [ -z "$input" ]; then
@@ -6826,7 +7118,7 @@ linux_info() {
 
 	local swap_info=$(free -m | awk 'NR==3{used=$3; total=$2; if (total == 0) {percentage=0} else {percentage=used*100/total}; printf "%dM/%dM (%d%%)", used, total, percentage}')
 
-	local runtime=$(cat /proc/uptime | awk -F. '{run_days=int($1 / 86400);run_hours=int(($1 % 86400) / 3600);run_minutes=int(($1 % 3600) / 60); if (run_days > 0) printf("%d天 ", run_days); if (run_hours > 0) printf("%d时 ", run_hours); printf("%d分\n", run_minutes)}')
+	local runtime=$(cat /proc/uptime | awk -F. '{run_days=int($1 / 86400);run_hours=int(($1 % 86400) / 3600);run_minutes=int(($1% 3600) / 60); if (run_days > 0) printf("%d day ", run_days); if (run_hours > 0) printf("%d hour ", run_hours); printf("%d minute\n", run_minutes)}')
 
 	local timezone=$(current_timezone)
 
@@ -6895,7 +7187,7 @@ linux_tools() {
 	  echo -e "${gl_kjlan}11.  ${gl_bai}btop modern monitoring tool${gl_huang}★${gl_bai}             ${gl_kjlan}12.  ${gl_bai}ranger file management tool"
 	  echo -e "${gl_kjlan}13.  ${gl_bai}ncdu disk usage viewing tool${gl_kjlan}14.  ${gl_bai}fzf global search tool"
 	  echo -e "${gl_kjlan}15.  ${gl_bai}vim text editor${gl_kjlan}16.  ${gl_bai}nano text editor${gl_huang}★${gl_bai}"
-	  echo -e "${gl_kjlan}17.  ${gl_bai}git version control system"
+	  echo -e "${gl_kjlan}17.  ${gl_bai}git version control system${gl_kjlan}18.  ${gl_bai}opencode AI programming assistant${gl_huang}★${gl_bai}"
 	  echo -e "${gl_kjlan}------------------------"
 	  echo -e "${gl_kjlan}21.  ${gl_bai}The Matrix Screensaver${gl_kjlan}22.  ${gl_bai}Running train screensaver"
 	  echo -e "${gl_kjlan}26.  ${gl_bai}Tetris mini game${gl_kjlan}27.  ${gl_bai}Snake mini game"
@@ -7054,6 +7346,17 @@ linux_tools() {
 			  send_stats "Install git"
 			  ;;
 
+			18)
+			  clear
+			  cd ~
+			  curl -fsSL https://opencode.ai/install | bash
+			  source ~/.bashrc
+			  source ~/.profile
+			  opencode
+			  send_stats "Install opencode"
+			  ;;
+
+
 			21)
 			  clear
 			  install cmatrix
@@ -7082,6 +7385,7 @@ linux_tools() {
 			  nsnake
 			  send_stats "Install nsnake"
 			  ;;
+
 			28)
 			  clear
 			  install ninvaders
@@ -7107,6 +7411,8 @@ linux_tools() {
 			  clear
 			  send_stats "Uninstall all"
 			  remove htop iftop tmux ffmpeg btop ranger ncdu fzf cmatrix sl bastet nsnake ninvaders vim nano git
+			  opencode uninstall
+			  rm -rf ~/.opencode
 			  ;;
 
 		  41)
@@ -7297,7 +7603,7 @@ docker_ssh_migration() {
 				local VOL_ARGS=""
 				for path in $VOL_PATHS; do VOL_ARGS+="-v $path:$path "; done
 
-				# Mirror
+				# mirror
 				local IMAGE
 				IMAGE=$(jq -r '.[0].Config.Image' "$inspect_file")
 
@@ -7599,7 +7905,7 @@ linux_docker() {
 
 				  echo "------------------------------------------------------------"
 				  container_ids=$(docker ps -q)
-				  printf "%-25s %-25s %-25s\n" "容器名称" "网络名称" "IP地址"
+				  printf "%-25s %-25s %-25s\n" "Container name" "network name" "IP address"
 
 				  for container_id in $container_ids; do
 					  local container_info=$(docker inspect --format '{{ .Name }}{{ range $network, $config := .NetworkSettings.Networks }} {{ $network }} {{ $config.IPAddress }}{{ end }}' "$container_id")
@@ -8231,7 +8537,7 @@ linux_ldnmp() {
 	  3)
 	  clear
 	  # Discuz Forum
-	  webname="Discuz论坛"
+	  webname="Discuz Forum"
 	  send_stats "Install$webname"
 	  echo "Start deployment$webname"
 	  add_yuming
@@ -8273,7 +8579,7 @@ linux_ldnmp() {
 	  4)
 	  clear
 	  # Kedao cloud desktop
-	  webname="可道云桌面"
+	  webname="Kedao cloud desktop"
 	  send_stats "Install$webname"
 	  echo "Start deployment$webname"
 	  add_yuming
@@ -8311,7 +8617,7 @@ linux_ldnmp() {
 	  5)
 	  clear
 	  # AppleCMS
-	  webname="苹果CMS"
+	  webname="AppleCMS"
 	  send_stats "Install$webname"
 	  echo "Start deployment$webname"
 	  add_yuming
@@ -8358,7 +8664,7 @@ linux_ldnmp() {
 	  6)
 	  clear
 	  # One-legged number card
-	  webname="独脚数卡"
+	  webname="One-legged number card"
 	  send_stats "Install$webname"
 	  echo "Start deployment$webname"
 	  add_yuming
@@ -8410,7 +8716,7 @@ linux_ldnmp() {
 	  7)
 	  clear
 	  # flarum forum
-	  webname="flarum论坛"
+	  webname="flarum forum"
 	  send_stats "Install$webname"
 	  echo "Start deployment$webname"
 	  add_yuming
@@ -8549,7 +8855,7 @@ linux_ldnmp() {
 
 	  20)
 	  clear
-	  webname="PHP动态站点"
+	  webname="PHP dynamic site"
 	  send_stats "Install$webname"
 	  echo "Start deployment$webname"
 	  add_yuming
@@ -8686,7 +8992,7 @@ linux_ldnmp() {
 
 	  22)
 	  clear
-	  webname="站点重定向"
+	  webname="site redirect"
 	  send_stats "Install$webname"
 	  echo "Start deployment$webname"
 	  add_yuming
@@ -8718,6 +9024,7 @@ linux_ldnmp() {
 		echo "IP+port has been blocked from accessing the service"
 	  else
 	  	ip_address
+		close_port "$port"
 		block_container_port "$docker_name" "$ipv4_address"
 	  fi
 
@@ -8725,7 +9032,7 @@ linux_ldnmp() {
 
 	  24)
 	  clear
-	  webname="反向代理-域名"
+	  webname="Reverse proxy-domain name"
 	  send_stats "Install$webname"
 	  echo "Start deployment$webname"
 	  add_yuming
@@ -8785,7 +9092,7 @@ linux_ldnmp() {
 
 	  27)
 	  clear
-	  webname="AI绘画提示词生成器"
+	  webname="AI painting prompt word generator"
 	  send_stats "Install$webname"
 	  echo "Start deployment$webname"
 	  add_yuming
@@ -8825,7 +9132,7 @@ linux_ldnmp() {
 
 	  30)
 	  clear
-	  webname="静态站点"
+	  webname="static site"
 	  send_stats "Install$webname"
 	  echo "Start deployment$webname"
 	  add_yuming
@@ -9185,16 +9492,25 @@ linux_ldnmp() {
 
 linux_panel() {
 
-
 local sub_choice="$1"
 
+clear
+cd ~
+install git
+if [ ! -d apps/.git ]; then
+	timeout 10s git clone ${gh_proxy}github.com/kejilion/apps.git
+else
+	cd apps
+	# git pull origin main > /dev/null 2>&1
+	timeout 10s git pull ${gh_proxy}github.com/kejilion/apps.git main > /dev/null 2>&1
+fi
 
 while true; do
 
 	if [ -z "$sub_choice" ]; then
 	  clear
 	  echo -e "application market"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 
 	  local app_numbers=$([ -f /home/docker/appno.txt ] && cat /home/docker/appno.txt || echo "")
 
@@ -9209,70 +9525,96 @@ while true; do
 
 	  echo -e "${gl_kjlan}1.   ${color1}Pagoda panel official version${gl_kjlan}2.   ${color2}aaPanel Pagoda International Version"
 	  echo -e "${gl_kjlan}3.   ${color3}1Panel new generation management panel${gl_kjlan}4.   ${color4}NginxProxyManager visualization panel"
-	  echo -e "${gl_kjlan}5.   ${color5}OpenList multi-store file list program${gl_kjlan}6.   ${color6}Ubuntu Remote Desktop Web Edition"
+	  echo -e "${gl_kjlan}5.   ${color5}OpenList multi-store file list program${gl_kjlan}6.   ${color6}Ubuntu Remote Desktop Web Version"
 	  echo -e "${gl_kjlan}7.   ${color7}Nezha Probe VPS Monitoring Panel${gl_kjlan}8.   ${color8}QB offline BT magnetic download panel"
 	  echo -e "${gl_kjlan}9.   ${color9}Poste.io mail server program${gl_kjlan}10.  ${color10}RocketChat multi-person online chat system"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}11.  ${color11}ZenTao project management software${gl_kjlan}12.  ${color12}Qinglong panel scheduled task management platform"
 	  echo -e "${gl_kjlan}13.  ${color13}Cloudreve network disk${gl_huang}★${gl_bai}                     ${gl_kjlan}14.  ${color14}Simple picture bed picture management program"
 	  echo -e "${gl_kjlan}15.  ${color15}emby multimedia management system${gl_kjlan}16.  ${color16}Speedtest speed test panel"
 	  echo -e "${gl_kjlan}17.  ${color17}AdGuardHome removes adware${gl_kjlan}18.  ${color18}onlyofficeOnline office OFFICE"
 	  echo -e "${gl_kjlan}19.  ${color19}Leichi WAF firewall panel${gl_kjlan}20.  ${color20}portainer container management panel"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}21.  ${color21}VScode web version${gl_kjlan}22.  ${color22}UptimeKuma monitoring tool"
 	  echo -e "${gl_kjlan}23.  ${color23}Memos web memo${gl_kjlan}24.  ${color24}Webtop remote desktop web version${gl_huang}★${gl_bai}"
 	  echo -e "${gl_kjlan}25.  ${color25}Nextcloud network disk${gl_kjlan}26.  ${color26}QD-Today scheduled task management framework"
 	  echo -e "${gl_kjlan}27.  ${color27}Dockge container stack management panel${gl_kjlan}28.  ${color28}LibreSpeed ​​speed test tool"
 	  echo -e "${gl_kjlan}29.  ${color29}searxng aggregated search station${gl_huang}★${gl_bai}                 ${gl_kjlan}30.  ${color30}PhotoPrism Private Album System"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}31.  ${color31}StirlingPDF Tools Collection${gl_kjlan}32.  ${color32}drawio free online charting software${gl_huang}★${gl_bai}"
 	  echo -e "${gl_kjlan}33.  ${color33}Sun-Panel Navigation Panel${gl_kjlan}34.  ${color34}Pingvin-Share file sharing platform"
 	  echo -e "${gl_kjlan}35.  ${color35}Minimalist circle of friends${gl_kjlan}36.  ${color36}LobeChatAI chat aggregation website"
 	  echo -e "${gl_kjlan}37.  ${color37}MyIP Toolbox${gl_huang}★${gl_bai}                        ${gl_kjlan}38.  ${color38}Xiaoya alist family bucket"
 	  echo -e "${gl_kjlan}39.  ${color39}Bililive live broadcast recording tool${gl_kjlan}40.  ${color40}webssh web version SSH connection tool"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}41.  ${color41}Mouse management panel${gl_kjlan}42.  ${color42}Nexterm remote connection tool"
 	  echo -e "${gl_kjlan}43.  ${color43}RustDesk remote desktop (server)${gl_huang}★${gl_bai}          ${gl_kjlan}44.  ${color44}RustDesk remote desktop (relay)${gl_huang}★${gl_bai}"
 	  echo -e "${gl_kjlan}45.  ${color45}Docker acceleration station${gl_kjlan}46.  ${color46}GitHub acceleration station${gl_huang}★${gl_bai}"
 	  echo -e "${gl_kjlan}47.  ${color47}Prometheus monitoring${gl_kjlan}48.  ${color48}Prometheus (host monitoring)"
 	  echo -e "${gl_kjlan}49.  ${color49}Prometheus (container monitoring)${gl_kjlan}50.  ${color50}Replenishment monitoring tools"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}51.  ${color51}PVE open chick panel${gl_kjlan}52.  ${color52}DPanel container management panel"
 	  echo -e "${gl_kjlan}53.  ${color53}llama3 chat AI large model${gl_kjlan}54.  ${color54}AMH host website building management panel"
 	  echo -e "${gl_kjlan}55.  ${color55}FRP intranet penetration (server)${gl_huang}★${gl_bai}	         ${gl_kjlan}56.  ${color56}FRP intranet penetration (client)${gl_huang}★${gl_bai}"
 	  echo -e "${gl_kjlan}57.  ${color57}Deepseek chat AI large model${gl_kjlan}58.  ${color58}Dify large model knowledge base${gl_huang}★${gl_bai}"
 	  echo -e "${gl_kjlan}59.  ${color59}NewAPI large model asset management${gl_kjlan}60.  ${color60}JumpServer open source bastion machine"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}61.  ${color61}Online translation server${gl_kjlan}62.  ${color62}RAGFlow large model knowledge base"
 	  echo -e "${gl_kjlan}63.  ${color63}OpenWebUI self-hosted AI platform${gl_huang}★${gl_bai}             ${gl_kjlan}64.  ${color64}it-tools toolbox"
 	  echo -e "${gl_kjlan}65.  ${color65}n8n automated workflow platform${gl_huang}★${gl_bai}               ${gl_kjlan}66.  ${color66}yt-dlp video download tool"
 	  echo -e "${gl_kjlan}67.  ${color67}ddns-go dynamic DNS management tool${gl_huang}★${gl_bai}            ${gl_kjlan}68.  ${color68}AllinSSL certificate management platform"
 	  echo -e "${gl_kjlan}69.  ${color69}SFTPGo file transfer tool${gl_kjlan}70.  ${color70}AstrBot chatbot framework"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}71.  ${color71}Navidrome private music server${gl_kjlan}72.  ${color72}bitwarden password manager${gl_huang}★${gl_bai}"
 	  echo -e "${gl_kjlan}73.  ${color73}LibreTV Private Movies${gl_kjlan}74.  ${color74}MoonTV private movies"
 	  echo -e "${gl_kjlan}75.  ${color75}Melody music wizard${gl_kjlan}76.  ${color76}Online DOS old games"
 	  echo -e "${gl_kjlan}77.  ${color77}Thunder offline download tool${gl_kjlan}78.  ${color78}PandaWiki intelligent document management system"
 	  echo -e "${gl_kjlan}79.  ${color79}Beszel server monitoring${gl_kjlan}80.  ${color80}linkwarden bookmark management"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}81.  ${color81}JitsiMeet video conference${gl_kjlan}82.  ${color82}gpt-load high-performance AI transparent proxy"
 	  echo -e "${gl_kjlan}83.  ${color83}komari server monitoring tool${gl_kjlan}84.  ${color84}Wallos personal financial management tool"
 	  echo -e "${gl_kjlan}85.  ${color85}immich picture video manager${gl_kjlan}86.  ${color86}jellyfin media management system"
 	  echo -e "${gl_kjlan}87.  ${color87}SyncTV is a great tool for watching movies together${gl_kjlan}88.  ${color88}Owncast self-hosted live streaming platform"
 	  echo -e "${gl_kjlan}89.  ${color89}FileCodeBox file express${gl_kjlan}90.  ${color90}matrix decentralized chat protocol"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}91.  ${color91}gitea private code repository${gl_kjlan}92.  ${color92}FileBrowser file manager"
 	  echo -e "${gl_kjlan}93.  ${color93}Dufs minimalist static file server${gl_kjlan}94.  ${color94}Gopeed high-speed download tool"
 	  echo -e "${gl_kjlan}95.  ${color95}paperless document management platform${gl_kjlan}96.  ${color96}2FAuth self-hosted two-step authenticator"
 	  echo -e "${gl_kjlan}97.  ${color97}WireGuard networking (server)${gl_kjlan}98.  ${color98}WireGuard networking (client)"
 	  echo -e "${gl_kjlan}99.  ${color99}DSM Synology Virtual Machine${gl_kjlan}100. ${color100}Syncthing peer-to-peer file synchronization tool"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}101. ${color101}AI video generation tool${gl_kjlan}102. ${color102}VoceChat multi-person online chat system"
 	  echo -e "${gl_kjlan}103. ${color103}Umami website statistics tool${gl_kjlan}104. ${color104}Stream four-layer proxy forwarding tool"
 	  echo -e "${gl_kjlan}105. ${color105}Siyuan Notes${gl_kjlan}106. ${color106}Drawnix open source whiteboard tool"
 	  echo -e "${gl_kjlan}107. ${color107}PanSou network disk search${gl_kjlan}108. ${color108}LangBot chatbot"
 	  echo -e "${gl_kjlan}109. ${color109}ZFile online network disk${gl_kjlan}110. ${color110}Karakeep bookmark management"
-	  echo -e "${gl_kjlan}------------------------"
+	  echo -e "${gl_kjlan}-------------------------"
+	  echo -e "${gl_kjlan}111. ${color111}Multi-format file conversion tool${gl_kjlan}112. ${color112}Lucky large intranet penetration tool"
+	  echo -e "${gl_kjlan}113. ${color113}Firefox browser"
+	  echo -e "${gl_kjlan}-------------------------"
+	  echo -e "${gl_kjlan}Third-party application list"
+  	  echo -e "${gl_kjlan}Want your app to appear here? Check out the developer guide:${gl_huang}https://dev.kejilion.sh/${gl_bai}"
+
+	  for f in "$HOME"/apps/*.conf; do
+		  [ -e "$f" ] || continue
+		  local base_name=$(basename "$f" .conf)
+		  # Get app description
+		  local app_text=$(grep "app_text=" "$f" | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+
+		  # Check installation status (match ID in appno.txt)
+		  # It is assumed here that what is recorded in appno.txt is base_name (i.e. file name)
+		  if echo "$app_numbers" | grep -q "^$base_name$"; then
+			  # If installed: show base_name - description [Installed] (green)
+			  echo -e "${gl_kjlan}$base_name${gl_bai} - ${gl_lv}$app_text[Installed]${gl_bai}"
+		  else
+			  # If not installed: display normally
+			  echo -e "${gl_kjlan}$base_name${gl_bai} - $app_text"
+		  fi
+	  done
+
+
+
+	  echo -e "${gl_kjlan}-------------------------"
 	  echo -e "${gl_kjlan}b.   ${gl_bai}Back up all application data${gl_kjlan}r.   ${gl_bai}Restore all app data"
 	  echo -e "${gl_kjlan}------------------------"
 	  echo -e "${gl_kjlan}0.   ${gl_bai}Return to main menu"
@@ -9284,7 +9626,7 @@ while true; do
 	  1|bt|baota)
 		local app_id="1"
 		local lujing="[ -d "/www/server/panel" ]"
-		local panelname="宝塔面板"
+		local panelname="pagoda panel"
 		local panelurl="https://www.bt.cn/new/index.html"
 
 		panel_app_install() {
@@ -9377,10 +9719,10 @@ while true; do
 
 		}
 
-		local docker_describe="一个Nginx反向代理工具面板，不支持添加域名访问。"
-		local docker_url="官网介绍: https://nginxproxymanager.com/"
-		local docker_use="echo \"初始用户名: admin@example.com\""
-		local docker_passwd="echo \"初始密码: changeme\""
+		local docker_describe="An Nginx reverse proxy tool panel that does not support adding domain name access."
+		local docker_url="Official website introduction: https://nginxproxymanager.com/"
+		local docker_use="echo \"Initial username: admin@example.com\""
+		local docker_passwd="echo \"Initial password: changeme\""
 		local app_size="1"
 
 		docker_app
@@ -9412,8 +9754,8 @@ while true; do
 		}
 
 
-		local docker_describe="一个支持多种存储，支持网页浏览和 WebDAV 的文件列表程序，由 gin 和 Solidjs 驱动"
-		local docker_url="官网介绍: https://github.com/OpenListTeam/OpenList"
+		local docker_describe="A file listing program that supports multiple storages, web browsing and WebDAV, powered by gin and Solidjs"
+		local docker_url="Official website introduction: https://github.com/OpenListTeam/OpenList"
 		local docker_use="docker exec openlist ./openlist admin random"
 		local docker_passwd=""
 		local app_size="1"
@@ -9453,8 +9795,8 @@ while true; do
 		}
 
 
-		local docker_describe="webtop基于Ubuntu的容器。若IP无法访问，请添加域名访问。"
-		local docker_url="官网介绍: https://docs.linuxserver.io/images/docker-webtop/"
+		local docker_describe="webtop is an Ubuntu-based container. If the IP cannot be accessed, please add a domain name for access."
+		local docker_url="Official website introduction: https://docs.linuxserver.io/images/docker-webtop/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="2"
@@ -9533,8 +9875,8 @@ while true; do
 
 		}
 
-		local docker_describe="qbittorrent离线BT磁力下载服务"
-		local docker_url="官网介绍: https://hub.docker.com/r/linuxserver/qbittorrent"
+		local docker_describe="qbittorrent offline BT magnetic download service"
+		local docker_url="Official website introduction: https://hub.docker.com/r/linuxserver/qbittorrent"
 		local docker_use="sleep 3"
 		local docker_passwd="docker logs qbittorrent"
 		local app_size="1"
@@ -9553,7 +9895,7 @@ while true; do
 			check_docker_image_update $docker_name
 
 			clear
-			echo -e "postal services$check_docker $update_status"
+			echo -e "postal service$check_docker $update_status"
 			echo "poste.io is an open source mail server solution,"
 			echo "Video introduction: https://www.bilibili.com/video/BV1wv421C71t?t=0.1"
 
@@ -9673,9 +10015,9 @@ while true; do
 	  10|rocketchat)
 
 		local app_id="10"
-		local app_name="Rocket.Chat聊天系统"
-		local app_text="Rocket.Chat 是一个开源的团队通讯平台，支持实时聊天、音视频通话、文件共享等多种功能，"
-		local app_url="官方介绍: https://www.rocket.chat/"
+		local app_name="Rocket.Chat chat system"
+		local app_text="Rocket.Chat is an open source team communication platform that supports real-time chat, audio and video calls, file sharing and other functions."
+		local app_url="Official introduction: https://www.rocket.chat/"
 		local docker_name="rocketchat"
 		local docker_port="3897"
 		local app_size="2"
@@ -9741,10 +10083,10 @@ while true; do
 
 		}
 
-		local docker_describe="禅道是通用的项目管理软件"
-		local docker_url="官网介绍: https://www.zentao.net/"
-		local docker_use="echo \"初始用户名: admin\""
-		local docker_passwd="echo \"初始密码: 123456\""
+		local docker_describe="ZenTao is a universal project management software"
+		local docker_url="Official website introduction: https://www.zentao.net/"
+		local docker_use="echo \"Initial username: admin\""
+		local docker_passwd="echo \"Initial password: 123456\""
 		local app_size="2"
 		docker_app
 
@@ -9770,8 +10112,8 @@ while true; do
 
 		}
 
-		local docker_describe="青龙面板是一个定时任务管理平台"
-		local docker_url="官网介绍: ${gh_proxy}github.com/whyour/qinglong"
+		local docker_describe="Qinglong Panel is a scheduled task management platform"
+		local docker_url="Official website introduction:${gh_proxy}github.com/whyour/qinglong"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -9781,9 +10123,9 @@ while true; do
 	  13|cloudreve)
 
 		local app_id="13"
-		local app_name="cloudreve网盘"
-		local app_text="cloudreve是一个支持多家云存储的网盘系统"
-		local app_url="视频介绍: https://www.bilibili.com/video/BV13F4m1c7h7?t=0.1"
+		local app_name="cloudreve network disk"
+		local app_text="cloudreve is a network disk system that supports multiple cloud storages"
+		local app_url="Video introduction: https://www.bilibili.com/video/BV13F4m1c7h7?t=0.1"
 		local docker_name="cloudreve"
 		local docker_port="5212"
 		local app_size="2"
@@ -9835,8 +10177,8 @@ while true; do
 
 		}
 
-		local docker_describe="简单图床是一个简单的图床程序"
-		local docker_url="官网介绍: ${gh_proxy}github.com/icret/EasyImages2.0"
+		local docker_describe="Simple drawing bed is a simple drawing bed program"
+		local docker_url="Official website introduction:${gh_proxy}github.com/icret/EasyImages2.0"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -9863,8 +10205,8 @@ while true; do
 		}
 
 
-		local docker_describe="emby是一个主从式架构的媒体服务器软件，可以用来整理服务器上的视频和音频，并将音频和视频流式传输到客户端设备"
-		local docker_url="官网介绍: https://emby.media/"
+		local docker_describe="emby is a master-slave architecture media server software that can be used to organize video and audio on the server and stream audio and video to client devices"
+		local docker_url="Official website introduction: https://emby.media/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -9884,8 +10226,8 @@ while true; do
 
 		}
 
-		local docker_describe="Speedtest测速面板是一个VPS网速测试工具，多项测试功能，还可以实时监控VPS进出站流量"
-		local docker_url="官网介绍: ${gh_proxy}github.com/wikihost-opensource/als"
+		local docker_describe="Speedtest speed measurement panel is a VPS network speed test tool with multiple test functions and can also monitor VPS inbound and outbound traffic in real time."
+		local docker_url="Official website introduction:${gh_proxy}github.com/wikihost-opensource/als"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -9915,8 +10257,8 @@ while true; do
 		}
 
 
-		local docker_describe="AdGuardHome是一款全网广告拦截与反跟踪软件，未来将不止是一个DNS服务器。"
-		local docker_url="官网介绍: https://hub.docker.com/r/adguard/adguardhome"
+		local docker_describe="AdGuardHome is a network-wide ad blocking and anti-tracking software that will be more than just a DNS server in the future."
+		local docker_url="Official website introduction: https://hub.docker.com/r/adguard/adguardhome"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -9944,8 +10286,8 @@ while true; do
 
 		}
 
-		local docker_describe="onlyoffice是一款开源的在线office工具，太强大了！"
-		local docker_url="官网介绍: https://www.onlyoffice.com/"
+		local docker_describe="onlyoffice is an open source online office tool, so powerful!"
+		local docker_url="Official website introduction: https://www.onlyoffice.com/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="2"
@@ -10041,8 +10383,8 @@ while true; do
 		}
 
 
-		local docker_describe="portainer是一个轻量级的docker容器管理面板"
-		local docker_url="官网介绍: https://www.portainer.io/"
+		local docker_describe="portainer is a lightweight docker container management panel"
+		local docker_url="Official website introduction: https://www.portainer.io/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10064,8 +10406,8 @@ while true; do
 		}
 
 
-		local docker_describe="VScode是一款强大的在线代码编写工具"
-		local docker_url="官网介绍: ${gh_proxy}github.com/coder/code-server"
+		local docker_describe="VScode is a powerful online code writing tool"
+		local docker_url="Official website introduction:${gh_proxy}github.com/coder/code-server"
 		local docker_use="sleep 3"
 		local docker_passwd="docker exec vscode-web cat /home/coder/.config/code-server/config.yaml"
 		local app_size="1"
@@ -10092,8 +10434,8 @@ while true; do
 		}
 
 
-		local docker_describe="Uptime Kuma 易于使用的自托管监控工具"
-		local docker_url="官网介绍: ${gh_proxy}github.com/louislam/uptime-kuma"
+		local docker_describe="Uptime Kuma Easy-to-use self-hosted monitoring tool"
+		local docker_url="Official website introduction:${gh_proxy}github.com/louislam/uptime-kuma"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10103,17 +10445,17 @@ while true; do
 	  23|memos)
 		local app_id="23"
 		local docker_name="memos"
-		local docker_img="ghcr.io/usememos/memos:latest"
+		local docker_img="neosmemo/memos:stable"
 		local docker_port=8023
 
 		docker_rum() {
 
-			docker run -d --name memos -p ${docker_port}:5230 -v /home/docker/memos:/var/opt/memos --restart=always ghcr.io/usememos/memos:latest
+			docker run -d --name memos -p ${docker_port}:5230 -v /home/docker/memos:/var/opt/memos --restart=always neosmemo/memos:stable
 
 		}
 
-		local docker_describe="Memos是一款轻量级、自托管的备忘录中心"
-		local docker_url="官网介绍: ${gh_proxy}github.com/usememos/memos"
+		local docker_describe="Memos is a lightweight, self-hosted memo center"
+		local docker_url="Official website introduction:${gh_proxy}github.com/usememos/memos"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10153,8 +10495,8 @@ while true; do
 		}
 
 
-		local docker_describe="webtop基于Alpine的中文版容器。若IP无法访问，请添加域名访问。"
-		local docker_url="官网介绍: https://docs.linuxserver.io/images/docker-webtop/"
+		local docker_describe="webtop is based on the Chinese version of Alpine container. If the IP cannot be accessed, please add a domain name for access."
+		local docker_url="Official website introduction: https://docs.linuxserver.io/images/docker-webtop/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="2"
@@ -10174,9 +10516,9 @@ while true; do
 
 		}
 
-		local docker_describe="Nextcloud拥有超过 400,000 个部署，是您可以下载的最受欢迎的本地内容协作平台"
-		local docker_url="官网介绍: https://nextcloud.com/"
-		local docker_use="echo \"账号: nextcloud  密码: $rootpasswd\""
+		local docker_describe="With over 400,000 deployments, Nextcloud is the most popular local content collaboration platform you can download"
+		local docker_url="Official website introduction: https://nextcloud.com/"
+		local docker_use="echo \"Account: nextcloud Password:$rootpasswd\""
 		local docker_passwd=""
 		local app_size="3"
 		docker_app
@@ -10194,8 +10536,8 @@ while true; do
 
 		}
 
-		local docker_describe="QD-Today是一个HTTP请求定时任务自动执行框架"
-		local docker_url="官网介绍: https://qd-today.github.io/qd/zh_CN/"
+		local docker_describe="QD-Today is an HTTP request scheduled task automatic execution framework"
+		local docker_url="Official website introduction: https://qd-today.github.io/qd/zh_CN/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10214,8 +10556,8 @@ while true; do
 
 		}
 
-		local docker_describe="dockge是一个可视化的docker-compose容器管理面板"
-		local docker_url="官网介绍: ${gh_proxy}github.com/louislam/dockge"
+		local docker_describe="dockge is a visual docker-compose container management panel"
+		local docker_url="Official website introduction:${gh_proxy}github.com/louislam/dockge"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10234,8 +10576,8 @@ while true; do
 
 		}
 
-		local docker_describe="librespeed是用Javascript实现的轻量级速度测试工具，即开即用"
-		local docker_url="官网介绍: ${gh_proxy}github.com/librespeed/speedtest"
+		local docker_describe="librespeed is a lightweight speed testing tool implemented in Javascript that can be used out of the box"
+		local docker_url="Official website introduction:${gh_proxy}github.com/librespeed/speedtest"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10259,8 +10601,8 @@ while true; do
 
 		}
 
-		local docker_describe="searxng是一个私有且隐私的搜索引擎站点"
-		local docker_url="官网介绍: https://hub.docker.com/r/alandoyle/searxng"
+		local docker_describe="searxng is a private and private search engine site"
+		local docker_url="Official website introduction: https://hub.docker.com/r/alandoyle/searxng"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10291,9 +10633,9 @@ while true; do
 		}
 
 
-		local docker_describe="photoprism非常强大的私有相册系统"
-		local docker_url="官网介绍: https://www.photoprism.app/"
-		local docker_use="echo \"账号: admin  密码: $rootpasswd\""
+		local docker_describe="Photoprism is a very powerful private photo album system"
+		local docker_url="Official website introduction: https://www.photoprism.app/"
+		local docker_use="echo \"Account: admin Password:$rootpasswd\""
 		local docker_passwd=""
 		local app_size="1"
 		docker_app
@@ -10319,8 +10661,8 @@ while true; do
 				 frooodle/s-pdf:latest
 		}
 
-		local docker_describe="这是一个强大的本地托管基于 Web 的 PDF 操作工具，使用 docker，允许您对 PDF 文件执行各种操作，例如拆分合并、转换、重新组织、添加图像、旋转、压缩等。"
-		local docker_url="官网介绍: ${gh_proxy}github.com/Stirling-Tools/Stirling-PDF"
+		local docker_describe="This is a powerful locally hosted web-based PDF manipulation tool using docker that allows you to perform various operations on PDF files such as split merge, convert, reorganize, add images, rotate, compress, etc."
+		local docker_url="Official website introduction:${gh_proxy}github.com/Stirling-Tools/Stirling-PDF"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10340,8 +10682,8 @@ while true; do
 		}
 
 
-		local docker_describe="这是一个强大图表绘制软件。思维导图，拓扑图，流程图，都能画"
-		local docker_url="官网介绍: https://www.drawio.com/"
+		local docker_describe="This is a powerful charting software. You can draw mind maps, topology diagrams, and flow charts."
+		local docker_url="Official website introduction: https://www.drawio.com/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10365,9 +10707,9 @@ while true; do
 
 		}
 
-		local docker_describe="Sun-Panel服务器、NAS导航面板、Homepage、浏览器首页"
-		local docker_url="官网介绍: https://doc.sun-panel.top/zh_cn/"
-		local docker_use="echo \"账号: admin@sun.cc  密码: 12345678\""
+		local docker_describe="Sun-Panel server, NAS navigation panel, Homepage, browser homepage"
+		local docker_url="Official website introduction: https://doc.sun-panel.top/zh_cn/"
+		local docker_use="echo \"Account: admin@sun.cc Password: 12345678\""
 		local docker_passwd=""
 		local app_size="1"
 		docker_app
@@ -10389,8 +10731,8 @@ while true; do
 				stonith404/pingvin-share
 		}
 
-		local docker_describe="Pingvin Share 是一个可自建的文件分享平台，是 WeTransfer 的一个替代品"
-		local docker_url="官网介绍: ${gh_proxy}github.com/stonith404/pingvin-share"
+		local docker_describe="Pingvin Share is a self-buildable file sharing platform and an alternative to WeTransfer"
+		local docker_url="Official website introduction:${gh_proxy}github.com/stonith404/pingvin-share"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10416,9 +10758,9 @@ while true; do
 		}
 
 
-		local docker_describe="极简朋友圈，高仿微信朋友圈，记录你的美好生活"
+		local docker_describe="Minimalist Moments, high imitation WeChat Moments, record your wonderful life"
 		local docker_url="Official website introduction:${gh_proxy}github.com/kingwrcy/moments?tab=readme-ov-file"
-		local docker_use="echo \"账号: admin  密码: a123456\""
+		local docker_use="echo \"Account: admin Password: a123456\""
 		local docker_passwd=""
 		local app_size="1"
 		docker_app
@@ -10440,8 +10782,8 @@ while true; do
 				lobehub/lobe-chat
 		}
 
-		local docker_describe="LobeChat聚合市面上主流的AI大模型，ChatGPT/Claude/Gemini/Groq/Ollama"
-		local docker_url="官网介绍: ${gh_proxy}github.com/lobehub/lobe-chat"
+		local docker_describe="LobeChat aggregates the mainstream AI large models on the market, ChatGPT/Claude/Gemini/Groq/Ollama"
+		local docker_url="Official website introduction:${gh_proxy}github.com/lobehub/lobe-chat"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="2"
@@ -10461,8 +10803,8 @@ while true; do
 		}
 
 
-		local docker_describe="是一个多功能IP工具箱，可以查看自己IP信息及连通性，用网页面板呈现"
-		local docker_url="官网介绍: ${gh_proxy}github.com/jason5ng32/MyIP/blob/main/README_ZH.md"
+		local docker_describe="It is a multifunctional IP toolbox that allows you to view your own IP information and connectivity, and displays it using a web panel."
+		local docker_url="Official website introduction:${gh_proxy}github.com/jason5ng32/MyIP/blob/main/README_ZH.md"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10495,8 +10837,8 @@ while true; do
 
 		}
 
-		local docker_describe="Bililive-go是一个支持多种直播平台的直播录制工具"
-		local docker_url="官网介绍: ${gh_proxy}github.com/hr3lxphr6j/bililive-go"
+		local docker_describe="Bililive-go is a live broadcast recording tool that supports multiple live broadcast platforms"
+		local docker_url="Official website introduction:${gh_proxy}github.com/hr3lxphr6j/bililive-go"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10512,8 +10854,8 @@ while true; do
 			docker run -d -p ${docker_port}:5032 --restart=always --name webssh -e TZ=Asia/Shanghai jrohy/webssh
 		}
 
-		local docker_describe="简易在线ssh连接工具和sftp工具"
-		local docker_url="官网介绍: ${gh_proxy}github.com/Jrohy/webssh"
+		local docker_describe="Simple online ssh connection tool and sftp tool"
+		local docker_url="Official website introduction:${gh_proxy}github.com/Jrohy/webssh"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10524,8 +10866,8 @@ while true; do
 
 		local app_id="41"
 		local lujing="[ -d "/www/server/panel" ]"
-		local panelname="耗子面板"
-		local panelurl="官方地址: ${gh_proxy}github.com/TheTNB/panel"
+		local panelname="mouse panel"
+		local panelurl="Official address:${gh_proxy}github.com/TheTNB/panel"
 
 		panel_app_install() {
 			mkdir -p ~/haozi && cd ~/haozi && curl -fsLm 10 -o install.sh https://dl.cdn.haozi.net/panel/install.sh && bash install.sh
@@ -10565,8 +10907,8 @@ while true; do
 
 		}
 
-		local docker_describe="nexterm是一款强大的在线SSH/VNC/RDP连接工具。"
-		local docker_url="官网介绍: ${gh_proxy}github.com/gnmyt/Nexterm"
+		local docker_describe="nexterm is a powerful online SSH/VNC/RDP connection tool."
+		local docker_url="Official website introduction:${gh_proxy}github.com/gnmyt/Nexterm"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10586,10 +10928,10 @@ while true; do
 		}
 
 
-		local docker_describe="rustdesk开源的远程桌面(服务端)，类似自己的向日葵私服。"
-		local docker_url="官网介绍: https://rustdesk.com/zh-cn/"
+		local docker_describe="Rustdesk's open source remote desktop (server) is similar to its own Sunflower private server."
+		local docker_url="Official website introduction: https://rustdesk.com/zh-cn/"
 		local docker_use="docker logs hbbs"
-		local docker_passwd="echo \"把你的IP和key记录下，会在远程桌面客户端中用到。去44选项装中继端吧！\""
+		local docker_passwd="echo \"Record your IP and key, which will be used in the remote desktop client. Go to option 44 to install the relay!\""
 		local app_size="1"
 		docker_app
 		  ;;
@@ -10606,9 +10948,9 @@ while true; do
 
 		}
 
-		local docker_describe="rustdesk开源的远程桌面(中继端)，类似自己的向日葵私服。"
-		local docker_url="官网介绍: https://rustdesk.com/zh-cn/"
-		local docker_use="echo \"前往官网下载远程桌面的客户端: https://rustdesk.com/zh-cn/\""
+		local docker_describe="Rustdesk's open source remote desktop (relay) is similar to its own Sunflower private server."
+		local docker_url="Official website introduction: https://rustdesk.com/zh-cn/"
+		local docker_use="echo \"Go to the official website to download the remote desktop client: https://rustdesk.com/zh-cn/\""
 		local docker_passwd=""
 		local app_size="1"
 		docker_app
@@ -10632,8 +10974,8 @@ while true; do
 
 		}
 
-		local docker_describe="Docker Registry 是一个用于存储和分发 Docker 镜像的服务。"
-		local docker_url="官网介绍: https://hub.docker.com/_/registry"
+		local docker_describe="Docker Registry is a service for storing and distributing Docker images."
+		local docker_url="Official website introduction: https://hub.docker.com/_/registry"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="2"
@@ -10652,8 +10994,8 @@ while true; do
 
 		}
 
-		local docker_describe="使用Go实现的GHProxy，用于加速部分地区Github仓库的拉取。"
-		local docker_url="官网介绍: https://github.com/WJQSERVER-STUDIO/ghproxy"
+		local docker_describe="GHProxy implemented using Go is used to accelerate the pulling of Github repositories in some areas."
+		local docker_url="Official website introduction: https://github.com/WJQSERVER-STUDIO/ghproxy"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10663,9 +11005,9 @@ while true; do
 	  47|prometheus|grafana)
 
 		local app_id="47"
-		local app_name="普罗米修斯监控"
-		local app_text="Prometheus+Grafana企业级监控系统"
-		local app_url="官网介绍: https://prometheus.io"
+		local app_name="Prometheus monitoring"
+		local app_text="Prometheus+Grafana enterprise-level monitoring system"
+		local app_url="Official website introduction: https://prometheus.io"
 		local docker_name="grafana"
 		local docker_port="8047"
 		local app_size="2"
@@ -10717,8 +11059,8 @@ while true; do
 
 		}
 
-		local docker_describe="这是一个普罗米修斯的主机数据采集组件，请部署在被监控主机上。"
-		local docker_url="官网介绍: https://github.com/prometheus/node_exporter"
+		local docker_describe="This is a Prometheus host data collection component, please deploy it on the monitored host."
+		local docker_url="Official website introduction: https://github.com/prometheus/node_exporter"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10747,8 +11089,8 @@ while true; do
 
 		}
 
-		local docker_describe="这是一个普罗米修斯的容器数据采集组件，请部署在被监控主机上。"
-		local docker_url="官网介绍: https://github.com/google/cadvisor"
+		local docker_describe="This is a Prometheus container data collection component, please deploy it on the monitored host."
+		local docker_url="Official website introduction: https://github.com/google/cadvisor"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10770,8 +11112,8 @@ while true; do
 
 		}
 
-		local docker_describe="这是一款网站变化检测、补货监控和通知的小工具"
-		local docker_url="官网介绍: https://github.com/dgtlmoon/changedetection.io"
+		local docker_describe="This is a small tool for website change detection, replenishment monitoring and notification"
+		local docker_url="Official website introduction: https://github.com/dgtlmoon/changedetection.io"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10803,8 +11145,8 @@ while true; do
 
 		}
 
-		local docker_describe="Docker可视化面板系统，提供完善的docker管理功能。"
-		local docker_url="官网介绍: https://github.com/donknap/dpanel"
+		local docker_describe="Docker visual panel system provides complete docker management functions."
+		local docker_url="Official website introduction: https://github.com/donknap/dpanel"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -10823,8 +11165,8 @@ while true; do
 
 		}
 
-		local docker_describe="OpenWebUI一款大语言模型网页框架，接入全新的llama3大语言模型"
-		local docker_url="官网介绍: https://github.com/open-webui/open-webui"
+		local docker_describe="OpenWebUI is a large language model web page framework that is connected to the new llama3 large language model."
+		local docker_url="Official website introduction: https://github.com/open-webui/open-webui"
 		local docker_use="docker exec ollama ollama run llama3.2:1b"
 		local docker_passwd=""
 		local app_size="5"
@@ -10835,8 +11177,8 @@ while true; do
 
 		local app_id="54"
 		local lujing="[ -d "/www/server/panel" ]"
-		local panelname="AMH面板"
-		local panelurl="官方地址: https://amh.sh/index.htm?amh"
+		local panelname="AMH panel"
+		local panelurl="Official address: https://amh.sh/index.htm?amh"
 
 		panel_app_install() {
 			cd ~
@@ -10875,8 +11217,8 @@ while true; do
 
 		}
 
-		local docker_describe="OpenWebUI一款大语言模型网页框架，接入全新的DeepSeek R1大语言模型"
-		local docker_url="官网介绍: https://github.com/open-webui/open-webui"
+		local docker_describe="OpenWebUI is a large language model web page framework that is connected to the new DeepSeek R1 large language model."
+		local docker_url="Official website introduction: https://github.com/open-webui/open-webui"
 		local docker_use="docker exec ollama ollama run deepseek-r1:1.5b"
 		local docker_passwd=""
 		local app_size="5"
@@ -10886,16 +11228,16 @@ while true; do
 
 	  58|dify)
 		local app_id="58"
-		local app_name="Dify知识库"
-		local app_text="是一款开源的大语言模型(LLM) 应用开发平台。自托管训练数据用于AI生成"
-		local app_url="官方网站: https://docs.dify.ai/zh-hans"
+		local app_name="DifyKnowledge Base"
+		local app_text="It is an open source large language model (LLM) application development platform. Self-hosted training data for AI generation"
+		local app_url="Official website: https://docs.dify.ai/zh-hans"
 		local docker_name="docker-nginx-1"
 		local docker_port="8058"
 		local app_size="3"
 
 		docker_app_install() {
 			install git
-			mkdir -p  /home/docker/ && cd /home/docker/ && git clone https://github.com/langgenius/dify.git && cd dify/docker && cp .env.example .env
+			mkdir -p  /home/docker/ && cd /home/docker/ && git clone ${gh_proxy}github.com/langgenius/dify.git && cd dify/docker && cp .env.example .env
 			sed -i "s/^EXPOSE_NGINX_PORT=.*/EXPOSE_NGINX_PORT=${docker_port}/; s/^EXPOSE_NGINX_SSL_PORT=.*/EXPOSE_NGINX_SSL_PORT=8858/" /home/docker/dify/docker/.env
 
 			docker compose up -d
@@ -10913,7 +11255,7 @@ while true; do
 		docker_app_update() {
 			cd  /home/docker/dify/docker/ && docker compose down --rmi all
 			cd  /home/docker/dify/
-			git pull origin main
+			git pull ${gh_proxy}github.com/langgenius/dify.git main > /dev/null 2>&1
 			sed -i 's/^EXPOSE_NGINX_PORT=.*/EXPOSE_NGINX_PORT=8058/; s/^EXPOSE_NGINX_SSL_PORT=.*/EXPOSE_NGINX_SSL_PORT=8858/' /home/docker/dify/docker/.env
 			cd  /home/docker/dify/docker/ && docker compose up -d
 		}
@@ -10931,15 +11273,15 @@ while true; do
 	  59|new-api)
 		local app_id="59"
 		local app_name="NewAPI"
-		local app_text="新一代大模型网关与AI资产管理系统"
-		local app_url="官方网站: https://github.com/Calcium-Ion/new-api"
+		local app_text="New generation of large model gateway and AI asset management system"
+		local app_url="Official website: https://github.com/Calcium-Ion/new-api"
 		local docker_name="new-api"
 		local docker_port="8059"
 		local app_size="3"
 
 		docker_app_install() {
 			install git
-			mkdir -p  /home/docker/ && cd /home/docker/ && git clone https://github.com/Calcium-Ion/new-api.git && cd new-api
+			mkdir -p  /home/docker/ && cd /home/docker/ && git clone ${gh_proxy}github.com/Calcium-Ion/new-api.git && cd new-api
 
 			sed -i -e "s/- \"3000:3000\"/- \"${docker_port}:3000\"/g" \
 				   -e 's/container_name: redis/container_name: redis-new-api/g' \
@@ -10956,7 +11298,8 @@ while true; do
 		docker_app_update() {
 			cd  /home/docker/new-api/ && docker compose down --rmi all
 			cd  /home/docker/new-api/
-			git pull origin main
+
+			git pull ${gh_proxy}github.com/Calcium-Ion/new-api.git main > /dev/null 2>&1
 			sed -i -e "s/- \"3000:3000\"/- \"${docker_port}:3000\"/g" \
 				   -e 's/container_name: redis/container_name: redis-new-api/g' \
 				   -e 's/container_name: mysql/container_name: mysql-new-api/g' \
@@ -10983,9 +11326,9 @@ while true; do
 	  60|jms)
 
 		local app_id="60"
-		local app_name="JumpServer开源堡垒机"
-		local app_text="是一个开源的特权访问管理 (PAM) 工具，该程序占用80端口不支持添加域名访问了"
-		local app_url="官方介绍: https://github.com/jumpserver/jumpserver"
+		local app_name="JumpServer open source bastion machine"
+		local app_text="It is an open source privileged access management (PAM) tool. This program occupies port 80 and does not support adding domain names for access."
+		local app_url="Official introduction: https://github.com/jumpserver/jumpserver"
 		local docker_name="jms_web"
 		local docker_port="80"
 		local app_size="2"
@@ -11035,8 +11378,8 @@ while true; do
 
 		}
 
-		local docker_describe="免费开源机器翻译 API，完全自托管，它的翻译引擎由开源Argos Translate库提供支持。"
-		local docker_url="官网介绍: https://github.com/LibreTranslate/LibreTranslate"
+		local docker_describe="Free open source machine translation API, fully self-hosted, and its translation engine is powered by the open source Argos Translate library."
+		local docker_url="Official website introduction: https://github.com/LibreTranslate/LibreTranslate"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="5"
@@ -11047,16 +11390,16 @@ while true; do
 
 	  62|ragflow)
 		local app_id="62"
-		local app_name="RAGFlow知识库"
-		local app_text="基于深度文档理解的开源 RAG（检索增强生成）引擎"
-		local app_url="官方网站: https://github.com/infiniflow/ragflow"
+		local app_name="RAGFlow knowledge base"
+		local app_text="Open source RAG (Retrieval Augmented Generation) engine based on deep document understanding"
+		local app_url="Official website: https://github.com/infiniflow/ragflow"
 		local docker_name="ragflow-server"
 		local docker_port="8062"
 		local app_size="8"
 
 		docker_app_install() {
 			install git
-			mkdir -p  /home/docker/ && cd /home/docker/ && git clone https://github.com/infiniflow/ragflow.git && cd ragflow/docker
+			mkdir -p  /home/docker/ && cd /home/docker/ && git clone ${gh_proxy}github.com/infiniflow/ragflow.git && cd ragflow/docker
 			sed -i "s/- 80:80/- ${docker_port}:80/; /- 443:443/d" docker-compose.yml
 			docker compose up -d
 			clear
@@ -11067,7 +11410,7 @@ while true; do
 		docker_app_update() {
 			cd  /home/docker/ragflow/docker/ && docker compose down --rmi all
 			cd  /home/docker/ragflow/
-			git pull origin main
+			git pull ${gh_proxy}github.com/infiniflow/ragflow.git main > /dev/null 2>&1
 			cd  /home/docker/ragflow/docker/
 			sed -i "s/- 80:80/- ${docker_port}:80/; /- 443:443/d" docker-compose.yml
 			docker compose up -d
@@ -11096,8 +11439,8 @@ while true; do
 
 		}
 
-		local docker_describe="OpenWebUI一款大语言模型网页框架，官方精简版本，支持各大模型API接入"
-		local docker_url="官网介绍: https://github.com/open-webui/open-webui"
+		local docker_describe="OpenWebUI is a large language model web page framework, the official simplified version supports API access to all major models."
+		local docker_url="Official website introduction: https://github.com/open-webui/open-webui"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="3"
@@ -11114,8 +11457,8 @@ while true; do
 			docker run -d --name it-tools --restart=always -p ${docker_port}:80 corentinth/it-tools:latest
 		}
 
-		local docker_describe="对开发人员和 IT 工作者来说非常有用的工具"
-		local docker_url="官网介绍: https://github.com/CorentinTh/it-tools"
+		local docker_describe="Very useful tool for developers and IT workers"
+		local docker_url="Official website introduction: https://github.com/CorentinTh/it-tools"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11150,8 +11493,8 @@ while true; do
 
 		}
 
-		local docker_describe="是一款功能强大的自动化工作流平台"
-		local docker_url="官网介绍: https://github.com/n8n-io/n8n"
+		local docker_describe="It is a powerful automated workflow platform"
+		local docker_url="Official website introduction: https://github.com/n8n-io/n8n"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11179,8 +11522,8 @@ while true; do
 
 		}
 
-		local docker_describe="自动将你的公网 IP（IPv4/IPv6）实时更新到各大 DNS 服务商，实现动态域名解析。"
-		local docker_url="官网介绍: https://github.com/jeessy2/ddns-go"
+		local docker_describe="Automatically update your public IP (IPv4/IPv6) to major DNS service providers in real time to achieve dynamic domain name resolution."
+		local docker_url="Official website introduction: https://github.com/jeessy2/ddns-go"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11197,10 +11540,10 @@ while true; do
 			docker run -d --name allinssl -p ${docker_port}:8888 -v /home/docker/allinssl/data:/www/allinssl/data -e ALLINSSL_USER=allinssl -e ALLINSSL_PWD=allinssldocker -e ALLINSSL_URL=allinssl allinssl/allinssl:latest
 		}
 
-		local docker_describe="开源免费的 SSL 证书自动化管理平台"
-		local docker_url="官网介绍: https://allinssl.com"
-		local docker_use="echo \"安全入口: /allinssl\""
-		local docker_passwd="echo \"用户名: allinssl  密码: allinssldocker\""
+		local docker_describe="Open source free SSL certificate automation management platform"
+		local docker_url="Official website introduction: https://allinssl.com"
+		local docker_use="echo \"Security entrance: /allinssl\""
+		local docker_passwd="echo \"Username: allinssl Password: allinssldocker\""
 		local app_size="1"
 		docker_app
 		  ;;
@@ -11229,8 +11572,8 @@ while true; do
 
 		}
 
-		local docker_describe="开源免费随时随地SFTP FTP WebDAV 文件传输工具"
-		local docker_url="官网介绍: https://sftpgo.com/"
+		local docker_describe="Open source free anytime, anywhere SFTP FTP WebDAV file transfer tool"
+		local docker_url="Official website introduction: https://sftpgo.com/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11261,9 +11604,9 @@ while true; do
 
 		}
 
-		local docker_describe="开源AI聊天机器人框架，支持微信，QQ，TG接入AI大模型"
-		local docker_url="官网介绍: https://astrbot.app/"
-		local docker_use="echo \"用户名: astrbot  密码: astrbot\""
+		local docker_describe="Open source AI chatbot framework, supporting WeChat, QQ, and TG access to large AI models"
+		local docker_url="Official website introduction: https://astrbot.app/"
+		local docker_use="echo \"Username: astrbot Password: astrbot\""
 		local docker_passwd=""
 		local app_size="1"
 		docker_app
@@ -11290,8 +11633,8 @@ while true; do
 
 		}
 
-		local docker_describe="是一个轻量、高性能的音乐流媒体服务器"
-		local docker_url="官网介绍: https://www.navidrome.org/"
+		local docker_describe="It is a lightweight, high-performance music streaming server"
+		local docker_url="Official website introduction: https://www.navidrome.org/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11317,8 +11660,8 @@ while true; do
 
 		}
 
-		local docker_describe="一个你可以控制数据的密码管理器"
-		local docker_url="官网介绍: https://bitwarden.com/"
+		local docker_describe="A password manager that puts you in control of your data"
+		local docker_url="Official website introduction: https://bitwarden.com/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11349,8 +11692,8 @@ while true; do
 
 		}
 
-		local docker_describe="免费在线视频搜索与观看平台"
-		local docker_url="官网介绍: https://github.com/LibreSpark/LibreTV"
+		local docker_describe="Free online video search and viewing platform"
+		local docker_url="Official website introduction: https://github.com/LibreSpark/LibreTV"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11364,9 +11707,9 @@ while true; do
 
 		local app_id="74"
 
-		local app_name="moontv私有影视"
-		local app_text="免费在线视频搜索与观看平台"
-		local app_url="视频介绍: https://github.com/MoonTechLab/LunaTV"
+		local app_name="moontv private film and television"
+		local app_text="Free online video search and viewing platform"
+		local app_url="Video introduction: https://github.com/MoonTechLab/LunaTV"
 		local docker_name="moontv-core"
 		local docker_port="8074"
 		local app_size="2"
@@ -11431,8 +11774,8 @@ while true; do
 
 		}
 
-		local docker_describe="你的音乐精灵，旨在帮助你更好地管理音乐。"
-		local docker_url="官网介绍: https://github.com/foamzou/melody"
+		local docker_describe="Your music wizard, designed to help you better manage your music."
+		local docker_url="Official website introduction: https://github.com/foamzou/melody"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11458,8 +11801,8 @@ while true; do
 
 		}
 
-		local docker_describe="是一个中文DOS游戏合集网站"
-		local docker_url="官网介绍: https://github.com/rwv/chinese-dos-games"
+		local docker_describe="It is a Chinese DOS game collection website"
+		local docker_url="Official website introduction: https://github.com/rwv/chinese-dos-games"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="2"
@@ -11493,9 +11836,9 @@ while true; do
 
 		}
 
-		local docker_describe="迅雷你的离线高速BT磁力下载工具"
-		local docker_url="官网介绍: https://github.com/cnk3x/xunlei"
-		local docker_use="echo \"手机登录迅雷，再输入邀请码，邀请码: 迅雷牛通\""
+		local docker_describe="Xunlei, your offline high-speed BT magnetic download tool"
+		local docker_url="Official website introduction: https://github.com/cnk3x/xunlei"
+		local docker_use="echo \"Log in to Xunlei with your mobile phone and enter the invitation code. Invitation code: Xunlei Niutong\""
 		local docker_passwd=""
 		local app_size="1"
 		docker_app
@@ -11508,8 +11851,8 @@ while true; do
 
 		local app_id="78"
 		local app_name="PandaWiki"
-		local app_text="PandaWiki是一款AI大模型驱动的开源智能文档管理系统，强烈建议不要自定义端口部署。"
-		local app_url="官方介绍: https://github.com/chaitin/PandaWiki"
+		local app_text="PandaWiki is an open source intelligent document management system driven by AI large models. It is strongly recommended not to customize port deployment."
+		local app_url="Official introduction: https://github.com/chaitin/PandaWiki"
 		local docker_name="panda-wiki-nginx"
 		local docker_port="2443"
 		local app_size="2"
@@ -11551,8 +11894,8 @@ while true; do
 
 		}
 
-		local docker_describe="Beszel轻量易用的服务器监控"
-		local docker_url="官网介绍: https://beszel.dev/zh/"
+		local docker_describe="Beszel is lightweight and easy-to-use server monitoring"
+		local docker_url="Official website introduction: https://beszel.dev/zh/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11564,9 +11907,9 @@ while true; do
 	  80|linkwarden)
 
 		  local app_id="80"
-		  local app_name="linkwarden书签管理"
-		  local app_text="一个开源的自托管书签管理平台，支持标签、搜索和团队协作。"
-		  local app_url="官方网站: https://linkwarden.app/"
+		  local app_name="linkwarden bookmark management"
+		  local app_text="An open source, self-hosted bookmark management platform that supports tagging, search, and team collaboration."
+		  local app_url="Official website: https://linkwarden.app/"
 		  local docker_name="linkwarden-linkwarden-1"
 		  local docker_port="8080"
 		  local app_size="3"
@@ -11636,9 +11979,9 @@ while true; do
 
 	  81|jitsi)
 		  local app_id="81"
-		  local app_name="JitsiMeet视频会议"
-		  local app_text="一个开源的安全视频会议解决方案，支持多人在线会议、屏幕共享与加密通信。"
-		  local app_url="官方网站: https://jitsi.org/"
+		  local app_name="JitsiMeet video conference"
+		  local app_text="An open source secure video conferencing solution that supports multi-person online conferencing, screen sharing and encrypted communication."
+		  local app_url="Official website: https://jitsi.org/"
 		  local docker_name="jitsi"
 		  local docker_port="8081"
 		  local app_size="3"
@@ -11704,8 +12047,8 @@ while true; do
 
 		}
 
-		local docker_describe="高性能AI接口透明代理服务"
-		local docker_url="官网介绍: https://www.gpt-load.com/"
+		local docker_describe="High-performance AI interface transparent proxy service"
+		local docker_url="Official website introduction: https://www.gpt-load.com/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11737,9 +12080,9 @@ while true; do
 
 		}
 
-		local docker_describe="轻量级的自托管服务器监控工具"
-		local docker_url="官网介绍: https://github.com/komari-monitor/komari/tree/main"
-		local docker_use="echo \"默认账号: admin  默认密码: 1212156\""
+		local docker_describe="Lightweight self-hosted server monitoring tool"
+		local docker_url="Official website introduction: https://github.com/komari-monitor/komari/tree/main"
+		local docker_use="echo \"Default account: admin Default password: 1212156\""
 		local docker_passwd=""
 		local app_size="1"
 		docker_app
@@ -11768,8 +12111,8 @@ while true; do
 
 		}
 
-		local docker_describe="开源个人订阅追踪器，可用于财务管理"
-		local docker_url="官网介绍: https://github.com/ellite/Wallos"
+		local docker_describe="Open source personal subscription tracker for financial management"
+		local docker_url="Official website introduction: https://github.com/ellite/Wallos"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11780,9 +12123,9 @@ while true; do
 	  85|immich)
 
 		  local app_id="85"
-		  local app_name="immich图片视频管理器"
-		  local app_text="高性能自托管照片和视频管理解决方案。"
-		  local app_url="官网介绍: https://github.com/immich-app/immich"
+		  local app_name="immich picture video manager"
+		  local app_text="High-performance self-hosted photo and video management solution."
+		  local app_url="Official website introduction: https://github.com/immich-app/immich"
 		  local docker_name="immich_server"
 		  local docker_port="8085"
 		  local app_size="3"
@@ -11846,8 +12189,8 @@ while true; do
 
 		}
 
-		local docker_describe="是一款开源媒体服务器软件"
-		local docker_url="官网介绍: https://jellyfin.org/"
+		local docker_describe="Is an open source media server software"
+		local docker_url="Official website introduction: https://jellyfin.org/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -11874,9 +12217,9 @@ while true; do
 
 		}
 
-		local docker_describe="远程一起观看电影和直播的程序。它提供了同步观影、直播、聊天等功能"
-		local docker_url="官网介绍: https://github.com/synctv-org/synctv"
-		local docker_use="echo \"初始账号和密码: root  登陆后请及时修改登录密码\""
+		local docker_describe="A program to watch movies and live broadcasts together remotely. It provides simultaneous viewing, live broadcast, chat and other functions"
+		local docker_url="Official website introduction: https://github.com/synctv-org/synctv"
+		local docker_use="echo \"Initial account and password: root. Please change the login password in time after logging in\""
 		local docker_passwd=""
 		local app_size="1"
 		docker_app
@@ -11904,10 +12247,10 @@ while true; do
 
 		}
 
-		local docker_describe="开源、免费的自建直播平台"
-		local docker_url="官网介绍: https://owncast.online"
-		local docker_use="echo \"访问地址后面带 /admin 访问管理员页面\""
-		local docker_passwd="echo \"初始账号: admin  初始密码: abc123  登陆后请及时修改登录密码\""
+		local docker_describe="Open source, free self-built live broadcast platform"
+		local docker_url="Official website introduction: https://owncast.online"
+		local docker_use="echo \"The access address is followed by /admin to access the administrator page\""
+		local docker_passwd="echo \"Initial account: admin Initial password: abc123 Please change the login password in time after logging in\""
 		local app_size="1"
 		docker_app
 
@@ -11933,10 +12276,10 @@ while true; do
 
 		}
 
-		local docker_describe="匿名口令分享文本和文件，像拿快递一样取文件"
-		local docker_url="官网介绍: https://github.com/vastsa/FileCodeBox"
-		local docker_use="echo \"访问地址后面带 /#/admin 访问管理员页面\""
-		local docker_passwd="echo \"管理员密码: FileCodeBox2023\""
+		local docker_describe="Share texts and files with anonymous passwords, and pick up files like express delivery"
+		local docker_url="Official website introduction: https://github.com/vastsa/FileCodeBox"
+		local docker_use="echo \"The access address is followed by /#/admin to access the administrator page\""
+		local docker_passwd="echo \"Administrator password: FileCodeBox2023\""
 		local app_size="1"
 		docker_app
 
@@ -11989,8 +12332,8 @@ while true; do
 
 		}
 
-		local docker_describe="Matrix是一个去中心化的聊天协议"
-		local docker_url="官网介绍: https://matrix.org/"
+		local docker_describe="Matrix is ​​a decentralized chat protocol"
+		local docker_url="Official website introduction: https://matrix.org/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12004,9 +12347,9 @@ while true; do
 
 		local app_id="91"
 
-		local app_name="gitea私有代码仓库"
-		local app_text="免费新一代的代码托管平台，提供接近 GitHub 的使用体验。"
-		local app_url="视频介绍: https://github.com/go-gitea/gitea"
+		local app_name="gitea private code repository"
+		local app_text="A free new generation code hosting platform that provides an experience close to GitHub."
+		local app_url="Video introduction: https://github.com/go-gitea/gitea"
 		local docker_name="gitea"
 		local docker_port="8091"
 		local app_size="2"
@@ -12068,8 +12411,8 @@ while true; do
 
 		}
 
-		local docker_describe="是一个基于Web的文件管理器"
-		local docker_url="官网介绍: https://filebrowser.org/"
+		local docker_describe="Is a web-based file manager"
+		local docker_url="Official website introduction: https://filebrowser.org/"
 		local docker_use="docker logs filebrowser"
 		local docker_passwd=""
 		local app_size="1"
@@ -12095,8 +12438,8 @@ while true; do
 
 		}
 
-		local docker_describe="极简静态文件服务器，支持上传下载"
-		local docker_url="官网介绍: https://github.com/sigoden/dufs"
+		local docker_describe="Minimalist static file server, supports upload and download"
+		local docker_url="Official website introduction: https://github.com/sigoden/dufs"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12126,8 +12469,8 @@ while true; do
 
 		}
 
-		local docker_describe="分布式高速下载工具，支持多种协议"
-		local docker_url="官网介绍: https://github.com/GopeedLab/gopeed"
+		local docker_describe="Distributed high-speed download tool, supporting multiple protocols"
+		local docker_url="Official website introduction: https://github.com/GopeedLab/gopeed"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12141,9 +12484,9 @@ while true; do
 
 		local app_id="95"
 
-		local app_name="paperless文档管理平台"
-		local app_text="开源的电子文档管理系统，它的主要用途是把你的纸质文件数字化并管理起来。"
-		local app_url="视频介绍: https://docs.paperless-ngx.com/"
+		local app_name="paperless document management platform"
+		local app_text="An open source electronic document management system, its main purpose is to digitize and manage your paper documents."
+		local app_url="Video introduction: https://docs.paperless-ngx.com/"
 		local docker_name="paperless-webserver-1"
 		local docker_port="8095"
 		local app_size="2"
@@ -12189,9 +12532,9 @@ while true; do
 
 		local app_id="96"
 
-		local app_name="2FAuth自托管二步验证器"
-		local app_text="自托管的双重身份验证 (2FA) 账户管理和验证码生成工具。"
-		local app_url="官网: https://github.com/Bubka/2FAuth"
+		local app_name="2FAuth self-hosted two-step authenticator"
+		local app_text="Self-hosted two-factor authentication (2FA) account management and verification code generation tool."
+		local app_url="Official website: https://github.com/Bubka/2FAuth"
 		local docker_name="2fauth"
 		local docker_port="8096"
 		local app_size="1"
@@ -12336,8 +12679,8 @@ while true; do
 
 		}
 
-		local docker_describe="现代化、高性能的虚拟专用网络工具"
-		local docker_url="官网介绍: https://www.wireguard.com/"
+		local docker_describe="Modern, high-performance virtual private network tools"
+		local docker_url="Official website introduction: https://www.wireguard.com/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12406,8 +12749,8 @@ while true; do
 
 		}
 
-		local docker_describe="现代化、高性能的虚拟专用网络工具"
-		local docker_url="官网介绍: https://www.wireguard.com/"
+		local docker_describe="Modern, high-performance virtual private network tools"
+		local docker_url="Official website introduction: https://www.wireguard.com/"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12420,9 +12763,9 @@ while true; do
 
 		local app_id="99"
 
-		local app_name="dsm群晖虚拟机"
-		local app_text="Docker容器中的虚拟DSM"
-		local app_url="官网: https://github.com/vdsm/virtual-dsm"
+		local app_name="dsm synology virtual machine"
+		local app_text="Virtual DSM in Docker container"
+		local app_url="Official website: https://github.com/vdsm/virtual-dsm"
 		local docker_name="dsm"
 		local docker_port="8099"
 		local app_size="16"
@@ -12492,8 +12835,8 @@ while true; do
 			  syncthing/syncthing:latest
 		}
 
-		local docker_describe="开源的点对点文件同步工具，类似于 Dropbox、Resilio Sync，但完全去中心化。"
-		local docker_url="官网介绍: https://github.com/syncthing/syncthing"
+		local docker_describe="An open source peer-to-peer file synchronization tool, similar to Dropbox and Resilio Sync, but completely decentralized."
+		local docker_url="Official website introduction: https://github.com/syncthing/syncthing"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12504,16 +12847,16 @@ while true; do
 
 	  101|moneyprinterturbo)
 		local app_id="101"
-		local app_name="AI视频生成工具"
-		local app_text="MoneyPrinterTurbo是一款使用AI大模型合成高清短视频的工具"
-		local app_url="官方网站: https://github.com/harry0703/MoneyPrinterTurbo"
+		local app_name="AI video generation tool"
+		local app_text="MoneyPrinterTurbo is a tool that uses AI large models to synthesize high-definition short videos"
+		local app_url="Official website: https://github.com/harry0703/MoneyPrinterTurbo"
 		local docker_name="moneyprinterturbo"
 		local docker_port="8101"
 		local app_size="3"
 
 		docker_app_install() {
 			install git
-			mkdir -p  /home/docker/ && cd /home/docker/ && git clone https://github.com/harry0703/MoneyPrinterTurbo.git && cd MoneyPrinterTurbo/
+			mkdir -p  /home/docker/ && cd /home/docker/ && git clone ${gh_proxy}github.com/harry0703/MoneyPrinterTurbo.git && cd MoneyPrinterTurbo/
 			sed -i "s/8501:8501/${docker_port}:8501/g" /home/docker/MoneyPrinterTurbo/docker-compose.yml
 
 			docker compose up -d
@@ -12525,7 +12868,8 @@ while true; do
 		docker_app_update() {
 			cd  /home/docker/MoneyPrinterTurbo/ && docker compose down --rmi all
 			cd  /home/docker/MoneyPrinterTurbo/
-			git pull origin main
+
+			git pull ${gh_proxy}github.com/harry0703/MoneyPrinterTurbo.git main > /dev/null 2>&1
 			sed -i "s/8501:8501/${docker_port}:8501/g" /home/docker/MoneyPrinterTurbo/docker-compose.yml
 			cd  /home/docker/MoneyPrinterTurbo/ && docker compose up -d
 		}
@@ -12559,8 +12903,8 @@ while true; do
 
 		}
 
-		local docker_describe="是一款支持独立部署的个人云社交媒体聊天服务"
-		local docker_url="官网介绍: https://github.com/Privoce/vocechat-web"
+		local docker_describe="It is a personal cloud social media chat service that supports independent deployment."
+		local docker_url="Official website introduction: https://github.com/Privoce/vocechat-web"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12571,16 +12915,16 @@ while true; do
 
 	  103|umami)
 		local app_id="103"
-		local app_name="Umami网站统计工具"
-		local app_text="开源、轻量、隐私友好的网站分析工具，类似于GoogleAnalytics。"
-		local app_url="官方网站: https://github.com/umami-software/umami"
+		local app_name="Umami website statistics tool"
+		local app_text="Open source, lightweight, privacy-friendly website analysis tool, similar to Google Analytics."
+		local app_url="Official website: https://github.com/umami-software/umami"
 		local docker_name="umami-umami-1"
 		local docker_port="8103"
 		local app_size="1"
 
 		docker_app_install() {
 			install git
-			mkdir -p  /home/docker/ && cd /home/docker/ && git clone https://github.com/umami-software/umami.git && cd umami
+			mkdir -p  /home/docker/ && cd /home/docker/ && git clone ${gh_proxy}github.com/umami-software/umami.git && cd umami
 			sed -i "s/3000:3000/${docker_port}:3000/g" /home/docker/umami/docker-compose.yml
 
 			docker compose up -d
@@ -12594,7 +12938,7 @@ while true; do
 		docker_app_update() {
 			cd  /home/docker/umami/ && docker compose down --rmi all
 			cd  /home/docker/umami/
-			git pull origin main
+			git pull ${gh_proxy}github.com/umami-software/umami.git main > /dev/null 2>&1
 			sed -i "s/8501:8501/${docker_port}:8501/g" /home/docker/umami/docker-compose.yml
 			cd  /home/docker/umami/ && docker compose up -d
 		}
@@ -12638,8 +12982,8 @@ while true; do
 
 		}
 
-		local docker_describe="思源笔记是一款隐私优先的知识管理系统"
-		local docker_url="官网介绍: https://github.com/siyuan-note/siyuan"
+		local docker_describe="Siyuan Notes is a privacy-first knowledge management system"
+		local docker_url="Official website introduction: https://github.com/siyuan-note/siyuan"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12665,8 +13009,8 @@ while true; do
 
 		}
 
-		local docker_describe="是一款强大的开源白板工具，集成思维导图、流程图等。"
-		local docker_url="官网介绍: https://github.com/plait-board/drawnix"
+		local docker_describe="It is a powerful open source whiteboard tool that integrates mind maps, flow charts, etc."
+		local docker_url="Official website introduction: https://github.com/plait-board/drawnix"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12700,8 +13044,8 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 
 		}
 
-		local docker_describe="PanSou是一个高性能的网盘资源搜索API服务。"
-		local docker_url="官网介绍: https://github.com/fish2018/pansou"
+		local docker_describe="PanSou is a high-performance network disk resource search API service."
+		local docker_url="Official website introduction: https://github.com/fish2018/pansou"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12714,16 +13058,16 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 
 	  108|langbot)
 		local app_id="108"
-		local app_name="LangBot聊天机器人"
-		local app_text="是一个开源的大语言模型原生即时通信机器人开发平台"
-		local app_url="官方网站: https://github.com/langbot-app/LangBot"
+		local app_name="LangBot chatbot"
+		local app_text="It is an open source large language model native instant messaging robot development platform."
+		local app_url="Official website: https://github.com/langbot-app/LangBot"
 		local docker_name="langbot_plugin_runtime"
 		local docker_port="8108"
 		local app_size="1"
 
 		docker_app_install() {
 			install git
-			mkdir -p  /home/docker/ && cd /home/docker/ && git clone https://github.com/langbot-app/LangBot && cd LangBot/docker
+			mkdir -p  /home/docker/ && cd /home/docker/ && git clone ${gh_proxy}github.com/langbot-app/LangBot && cd LangBot/docker
 			sed -i "s/5300:5300/${docker_port}:5300/g" /home/docker/LangBot/docker/docker-compose.yaml
 
 			docker compose up -d
@@ -12735,7 +13079,7 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 		docker_app_update() {
 			cd  /home/docker/LangBot/docker && docker compose down --rmi all
 			cd  /home/docker/LangBot/
-			git pull origin main
+			git pull ${gh_proxy}github.com/langbot-app/LangBot main > /dev/null 2>&1
 			sed -i "s/5300:5300/${docker_port}:5300/g" /home/docker/LangBot/docker/docker-compose.yaml
 			cd  /home/docker/LangBot/docker/ && docker compose up -d
 		}
@@ -12772,8 +13116,8 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 
 		}
 
-		local docker_describe="是一个适用于个人或小团队的在线网盘程序。"
-		local docker_url="官网介绍: https://github.com/zfile-dev/zfile"
+		local docker_describe="It is an online network disk program suitable for individuals or small teams."
+		local docker_url="Official website introduction: https://github.com/zfile-dev/zfile"
 		local docker_use=""
 		local docker_passwd=""
 		local app_size="1"
@@ -12784,16 +13128,16 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 
 	  110|karakeep)
 		local app_id="110"
-		local app_name="karakeep书签管理"
-		local app_text="是一款可自行托管的书签应用，带有人工智能功能，专为数据囤积者而设计。"
-		local app_url="官方网站: https://github.com/karakeep-app/karakeep"
+		local app_name="karakeep bookmark management"
+		local app_text="is a self-hosted bookmarking app with artificial intelligence capabilities designed for data hoarders."
+		local app_url="Official website: https://github.com/karakeep-app/karakeep"
 		local docker_name="docker-web-1"
 		local docker_port="8110"
 		local app_size="1"
 
 		docker_app_install() {
 			install git
-			mkdir -p  /home/docker/ && cd /home/docker/ && git clone https://github.com/karakeep-app/karakeep.git && cd karakeep/docker && cp .env.sample .env
+			mkdir -p  /home/docker/ && cd /home/docker/ && git clone ${gh_proxy}github.com/karakeep-app/karakeep.git && cd karakeep/docker && cp .env.sample .env
 			sed -i "s/3000:3000/${docker_port}:3000/g" /home/docker/karakeep/docker/docker-compose.yml
 
 			docker compose up -d
@@ -12805,7 +13149,7 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 		docker_app_update() {
 			cd  /home/docker/karakeep/docker/ && docker compose down --rmi all
 			cd  /home/docker/karakeep/
-			git pull origin main
+			git pull ${gh_proxy}github.com/karakeep-app/karakeep.git main > /dev/null 2>&1
 			sed -i "s/3000:3000/${docker_port}:3000/g" /home/docker/karakeep/docker/docker-compose.yml
 			cd  /home/docker/karakeep/docker/ && docker compose up -d
 		}
@@ -12822,11 +13166,92 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 
 
 
+	  111|convertx)
+
+		local app_id="111"
+		local docker_name="convertx"
+		local docker_img="ghcr.io/c4illin/convertx:latest"
+		local docker_port=8111
+
+		docker_rum() {
+
+			docker run -d --name=${docker_name} --restart=always \
+				-p ${docker_port}:3000 \
+				-v /home/docker/convertx:/app/data \
+				${docker_img}
+
+		}
+
+		local docker_describe="It is a powerful multi-format file conversion tool (supports documents, images, audio and video, etc.) It is strongly recommended to add domain name access"
+		local docker_url="Project address: https://github.com/c4illin/ConvertX"
+		local docker_use=""
+		local docker_passwd=""
+		local app_size="2"
+		docker_app
+
+		  ;;
 
 
+	  112|lucky)
+
+		local app_id="112"
+		local docker_name="lucky"
+		local docker_img="gdy666/lucky:v2"
+		# Since Lucky uses the host network mode, the port here is only for record/explanation reference and is actually controlled by the application itself (default 16601)
+		local docker_port=8112
+
+		docker_rum() {
+
+			docker run -d --name=${docker_name} --restart=always \
+				--network host \
+				-v /home/docker/lucky/conf:/app/conf \
+				-v /var/run/docker.sock:/var/run/docker.sock \
+				${docker_img}
+
+			echo "Waiting for Lucky to initialize..."
+			sleep 10
+			docker exec lucky /app/lucky -rSetHttpAdminPort ${docker_port}
+
+		}
+
+		local docker_describe="Lucky is a large intranet penetration and port forwarding management tool that supports DDNS, reverse proxy, WOL and other functions."
+		local docker_url="Project address: https://github.com/gdy666/lucky"
+		local docker_use="echo \"Default account password: 666\""
+		local docker_passwd=""
+		local app_size="1"
+		docker_app
+
+		  ;;
 
 
+	  113|firefox)
 
+		local app_id="113"
+		local docker_name="firefox"
+		local docker_img="jlesage/firefox:latest"
+		local docker_port=8113
+
+		docker_rum() {
+
+			read -e -p "Set login password:" admin_password
+
+			docker run -d --name=${docker_name} --restart=always \
+				-p ${docker_port}:5800 \
+				-v /home/docker/firefox:/config:rw \
+				-e ENABLE_CJK_FONT=1 \
+				-e WEB_AUDIO=1 \
+				-e VNC_PASSWORD="${admin_password}" \
+				${docker_img}
+		}
+
+		local docker_describe="It is a Firefox browser running in Docker that supports direct access to the desktop browser interface through the web page."
+		local docker_url="Project address: https://github.com/jlesage/docker-firefox"
+		local docker_use=""
+		local docker_passwd=""
+		local app_size="1"
+		docker_app
+
+		  ;;
 
 
 	  b)
@@ -12900,11 +13325,25 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 
 		  ;;
 
-
 	  0)
 		  kejilion
 		  ;;
 	  *)
+		cd ~
+		install git
+		if [ ! -d apps/.git ]; then
+			timeout 10s git clone ${gh_proxy}github.com/kejilion/apps.git
+		else
+			cd apps
+			# git pull origin main > /dev/null 2>&1
+			timeout 10s git pull ${gh_proxy}github.com/kejilion/apps.git main > /dev/null 2>&1
+		fi
+		local custom_app="$HOME/apps/${sub_choice}.conf"
+		if [ -f "$custom_app" ]; then
+			. "$custom_app"
+		else
+			echo -e "${gl_hong}Error: Not found with number${sub_choice}application configuration${gl_bai}"
+		fi
 		  ;;
 	esac
 	break_end
@@ -12912,6 +13351,7 @@ discourse,yunsou,ahhhhfs,nsgame,gying" \
 
 done
 }
+
 
 
 linux_work() {
@@ -13026,9 +13466,9 @@ linux_work() {
 			while true; do
 			  clear
 			  if grep -q 'tmux attach-session -t sshd || tmux new-session -s sshd' ~/.bashrc; then
-				  local tmux_sshd_status="${gl_lv}开启${gl_bai}"
+				  local tmux_sshd_status="${gl_lv}turn on${gl_bai}"
 			  else
-				  local tmux_sshd_status="${gl_hui}关闭${gl_bai}"
+				  local tmux_sshd_status="${gl_hui}closure${gl_bai}"
 			  fi
 			  send_stats "SSH resident mode"
 			  echo -e "SSH resident mode${tmux_sshd_status}"
@@ -13049,7 +13489,7 @@ linux_work() {
 			  	  tmux_run
 				  ;;
 				2)
-				  sed -i '/# 自动进入 tmux 会话/,+4d' ~/.bashrc
+				  sed -i '/# Automatically enter tmux session/,+4d' ~/.bashrc
 				  tmux kill-window -t sshd
 				  ;;
 				*)
@@ -13123,6 +13563,7 @@ switch_mirror() {
 		  --upgrade-software "$upgrade_software" \
 		  --clean-cache "$clean_cache" \
 		  --ignore-backup-tips \
+		  --install-epel true \
 		  --pure-mode
 	else
 		echo "Use official mirror source..."
@@ -13134,6 +13575,7 @@ switch_mirror() {
 		  --upgrade-software "$upgrade_software" \
 		  --clean-cache "$clean_cache" \
 		  --ignore-backup-tips \
+		  --install-epel true \
 		  --pure-mode
 	fi
 }
@@ -13460,8 +13902,8 @@ EOF
 						;;
 					2)
 						rm -f /etc/gai.conf
-						echo "Switched to IPv6 first"
-						send_stats "Switched to IPv6 first"
+						echo "Switched to IPv6 priority"
+						send_stats "Switched to IPv6 priority"
 						;;
 
 					3)
@@ -13538,7 +13980,7 @@ EOF
 				send_stats "User management"
 				echo "User list"
 				echo "----------------------------------------------------------------------------"
-				printf "%-24s %-34s %-20s %-10s\n" "用户名" "用户权限" "用户组" "sudo权限"
+				printf "%-24s %-34s %-20s %-10s\n" "username" "User permissions" "User group" "sudo permissions"
 				while IFS=: read -r username _ userid groupid _ _ homedir shell; do
 					local groups=$(groups "$username" | cut -d : -f 2)
 					local sudo_status=$(sudo -n -lU "$username" 2>/dev/null | grep -q '(ALL : ALL)' && echo "Yes" || echo "No")
@@ -14010,53 +14452,7 @@ EOF
 
 
 		  24)
-
-			  root_use
-			  send_stats "Private key login"
-			  while true; do
-				  clear
-			  	  echo "ROOT private key login mode"
-			  	  echo "Video introduction: https://www.bilibili.com/video/BV1Q4421X78n?t=209.4"
-			  	  echo "------------------------------------------------"
-			  	  echo "A key pair will be generated, a more secure way to log in via SSH"
-				  echo "------------------------"
-				  echo "1. Generate a new key 2. Import an existing key 3. View the local key"
-				  echo "------------------------"
-				  echo "0. Return to the previous menu"
-				  echo "------------------------"
-				  read -e -p "Please enter your choice:" host_dns
-
-				  case $host_dns in
-					  1)
-				  		send_stats "Generate new key"
-				  		add_sshkey
-						break_end
-
-						  ;;
-					  2)
-						send_stats "Import existing public key"
-						import_sshkey
-						break_end
-
-						  ;;
-					  3)
-						send_stats "View local key"
-						echo "------------------------"
-						echo "Public key information"
-						cat ~/.ssh/authorized_keys
-						echo "------------------------"
-						echo "Private key information"
-						cat ~/.ssh/sshkey
-						echo "------------------------"
-						break_end
-
-						  ;;
-					  *)
-						  break  # 跳出循环，退出菜单
-						  ;;
-				  esac
-			  done
-
+			sshkey_panel
 			  ;;
 
 		  25)
@@ -14291,11 +14687,11 @@ EOF
 			while true; do
 			  clear
 			  if grep -q '^ENABLE_STATS="true"' /usr/local/bin/k > /dev/null 2>&1; then
-			  	local status_message="${gl_lv}正在采集数据${gl_bai}"
+			  	local status_message="${gl_lv}Collecting data${gl_bai}"
 			  elif grep -q '^ENABLE_STATS="false"' /usr/local/bin/k > /dev/null 2>&1; then
-			  	local status_message="${gl_hui}采集已关闭${gl_bai}"
+			  	local status_message="${gl_hui}Collection is closed${gl_bai}"
 			  else
-			  	local status_message="无法确定的状态"
+			  	local status_message="Uncertain status"
 			  fi
 
 			  echo "Privacy and security"
@@ -15009,7 +15405,7 @@ done
 
 
 k_info() {
-send_stats "k command reference examples"
+send_stats "k command reference use case"
 echo "-------------------"
 echo "Video introduction: https://www.bilibili.com/video/BV1ib421E7it?t=0.1"
 echo "The following is a reference use case for the k command:"
@@ -15057,6 +15453,10 @@ echo "Application market management k app"
 echo "Quick management of application numbers k app 26 | k app 1panel | k app npm"
 echo "fail2ban management k fail2ban | k f2b"
 echo "Display system information k info"
+echo "ROOT key management k sshkey"
+echo "SSH public key import (URL) k sshkey <url>"
+echo "SSH public key import (GitHub) k sshkey github <user>"
+
 }
 
 
@@ -15130,6 +15530,7 @@ else
 			  echo "IP+port has been blocked from accessing the service"
 	  		else
 			  ip_address
+			  close_port "$port"
 	  		  block_container_port "$docker_name" "$ipv4_address"
 	  		fi
 			;;
@@ -15292,6 +15693,42 @@ else
 			fail2ban_panel
 			;;
 
+
+		sshkey)
+			shift		
+			case "$1" in
+				"" )
+					# sshkey → interactive menu
+					send_stats "SSHKey interactive menu"
+					sshkey_panel
+					;;
+		
+				github )
+					shift
+					send_stats "Import SSH public key from GitHub"
+					fetch_github_ssh_keys "$1"
+					;;
+		
+				http://*|https://* )
+					send_stats "Import SSH public key from URL"
+					fetch_remote_ssh_keys "$1"
+					;;
+
+				ssh-rsa*|ssh-ed25519*|ssh-ecdsa* )
+					send_stats "Directly import the public key"
+					import_sshkey "$1"
+					;;
+
+				* )
+					echo "Error: unknown parameter '$1'"
+					echo "usage:"
+					echo "k sshkey enters the interactive menu"
+					echo "k sshkey \"<pubkey>\" Directly import the SSH public key"
+					echo "k sshkey <url> Import SSH public key from URL"
+					echo "k sshkey github <user> Import SSH public key from GitHub"
+					;;
+			esac
+			;;
 		*)
 			k_info
 			;;
